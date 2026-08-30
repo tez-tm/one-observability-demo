@@ -311,9 +311,22 @@ export const HOUSEKEEPING_CANARY = {
     path: '../applications/canaries/housekeeping',
 };
 
+/**
+ * L1 Automated Triage health-check canary. Performs outside-in API health
+ * checks every 5 minutes; failures drive the `l1t-health-` availability alarm.
+ */
+export const L1_HEALTH_CANARY = {
+    name: 'l1t-health-canary',
+    runtime: new CanaryRuntime('syn-nodejs-puppeteer-11.0', RuntimeFamily.NODEJS),
+    scheduleExpression: 'rate(5 minutes)',
+    handler: 'index.handler',
+    path: '../applications/canaries/l1-health',
+};
+
 export const CANARY_FUNCTIONS = new Map([
     [PETSITE_CANARY.name, PETSITE_CANARY],
     [HOUSEKEEPING_CANARY.name, HOUSEKEEPING_CANARY],
+    [L1_HEALTH_CANARY.name, L1_HEALTH_CANARY],
 ]);
 
 /** Maximum number of Availability Zones to use for high availability */

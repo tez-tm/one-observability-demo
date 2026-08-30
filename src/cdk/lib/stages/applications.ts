@@ -74,6 +74,8 @@ import { TrafficGeneratorFunction } from '../serverless/functions/traffic-genera
 import { Bucket } from 'aws-cdk-lib/aws-s3';
 import { HouseKeepingCanary } from '../serverless/canaries/housekeeping/housekeeping';
 import { TrafficGeneratorCanary } from '../serverless/canaries/traffic-generator/traffic-generator';
+import { L1HealthCanary } from '../serverless/canaries/l1-health/l1-health';
+import { ComparisonOperator, TreatMissingData } from 'aws-cdk-lib/aws-cloudwatch';
 import { NagSuppressions } from 'cdk-nag';
 import { PetfoodCleanupProcessorFunction } from '../serverless/functions/petfood/cleanup-processor';
 import { PetfoodImageGeneratorFunction } from '../serverless/functions/petfood/image-generator';
@@ -506,6 +508,34 @@ export class MicroservicesStack extends Stack {
                     artifactsBucket: canaryArtifactBucket,
                     urlParameterName: `${PARAMETER_STORE_PREFIX}/${SSM_PARAMETER_NAMES.PETSITE_URL}`,
                 });
+            }
+            if (name == CanaryNames.L1Health) {
+                const l1HealthCanary = new L1HealthCanary(this, name, {
+                    ...canaryProperties,
+                    artifactsBucket: canaryArtifactBucket,
+                    // Target URLs are resolved at runtime from an SSM parameter so
+                    // the canary can be pointed at any application's endpoints
+                    // without changing source (Requirement 11.2). Defaults to the
+                    // validation target: the pet adoption site URL.
+                    targetUrlsParameterName: `${PARAMETER_STORE_PREFIX}/${SSM_PARAMETER_NAMES.PETSITE_URL}`,
+                    requestTimeoutMs: 30000,
+                });
+
+                // Net-new availability alarm on the canary SuccessPercent metric.
+                // Transitions to ALARM on any single failed execution
+                // (evaluationPeriods = 1). The l1t-health- name prefix is the
+                // trigger the routing EventBridge rule (Slice 2) filters on.
+                l1HealthCanary.canary
+                    .metricSuccessPercent({ statistic: 'Average' })
+                    .createAlarm(this, 'L1HealthAvailabilityAlarm', {
+                        alarmName: `l1t-health-${l1HealthCanary.canary.canaryName}-availability`,
+                        alarmDescription:
+                            'L1 Automated Triage: canary availability dropped below 100% (a health check failed)',
+                        threshold: 100,
+                        comparisonOperator: ComparisonOperator.LESS_THAN_THRESHOLD,
+                        evaluationPeriods: 1,
+                        treatMissingData: TreatMissingData.NOT_BREACHING,
+                    });
             }
         }
 
