@@ -111,11 +111,14 @@ interface L1HealthCanaryProperties extends WorkshopCanaryProperties {
 
 **Design Decision**: Extend `WorkshopCanary` rather than creating a separate construct. The base class already handles IAM role creation, S3 artifact storage, schedule configuration, and X-Ray tracing. We add Secrets Manager access and structured failure logging.
 
-**Canary Script Pattern** (Node.js, syn-nodejs-puppeteer-9.1):
+**Canary Script Pattern** (Node.js, syn-nodejs-puppeteer-11.0):
 - Retrieve credentials from Secrets Manager
 - For each configured URL, execute HTTP GET with 30s timeout
-- Log structured JSON: `{ url, statusCode, responseBody, latencyMs, timestamp }`
+- **Follow redirects (up to 5 hops) and judge the final response.** A bare 3xx is neither pass nor fail on its own — the canary follows the `Location` chain and classifies the *final* status: final 2xx = success, final non-2xx = failure, no response = timeout, redirect loop / exceeding 5 hops / invalid Location = failure. This is AWS-aligned: CloudFront relays 3xx to the client rather than following it ([How CloudFront processes HTTP 3xx status codes](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/http-3xx-status-codes.html)), so the client (canary) must follow the redirect to determine health. The workshop PetSite URL (behind CloudFront) returns a 302 at the root, which is healthy once followed.
+- Log structured JSON: `{ url, finalUrl, redirectChain, redirectCount, statusCode, responseBody, latencyMs, timestamp }`
 - Report success/failure to CloudWatch Synthetics metrics
+
+> **Runtime note:** the implementation uses `syn-nodejs-puppeteer-11.0` to match the workshop's existing canaries (earlier drafts referenced 9.1).
 
 **Integration with existing infrastructure**:
 - Reuses the `canaryArtifactBucket` already created in `MicroservicesStack`
@@ -487,6 +490,7 @@ interface RunbookEntry {
 |---------------|---------|----------|
 | Secrets Manager unreachable | Canary script | Log credential error, skip health checks, report failure status |
 | HTTP request timeout (30s) | Canary script | Report timeout failure with URL and latency |
+| HTTP redirect (3xx) | Canary script | Follow up to 5 hops, judge final status; redirect loop / over-cap / invalid Location = failure |
 | EventBridge delivery failure | EventBridge DLQ | Retry via built-in EventBridge retry policy (2 attempts) |
 | Webhook Lambda throttled | SQS DLQ (from `WorkshopLambdaFunction` base) | Messages retained for 14 days for manual replay |
 | DevOps Agent invocation timeout | Webhook Lambda retry | 3 retries with exponential backoff (1s, 2s, 4s) |

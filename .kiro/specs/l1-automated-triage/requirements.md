@@ -37,10 +37,12 @@ The system is designed to maximize reuse of existing detection infrastructure. T
 1. THE Canary SHALL execute an HTTP GET request against each configured non-production test URL every 5 minutes
 2. THE Canary SHALL retrieve authentication credentials from AWS Secrets Manager before each execution
 3. IF the Canary fails to retrieve credentials from AWS Secrets Manager, THEN THE Canary SHALL report a credential retrieval failure status to CloudWatch and skip the health check execution
-4. WHEN the Canary receives an HTTP response with a status code outside the 2xx range, THE Canary SHALL report a failure status to CloudWatch
-5. WHEN the Canary receives no HTTP response within 30 seconds, THE Canary SHALL report a timeout failure status to CloudWatch
-6. WHEN the Canary receives an HTTP response with a status code in the 2xx range, THE Canary SHALL report a success status to CloudWatch
-7. THE Canary SHALL log the full request URL, response status code, response body (or absence of response in timeout cases), and latency in milliseconds to the CloudWatch Log Group `/aws/synthetics/{canary-name}`
+4. WHEN the Canary receives an HTTP redirect (3xx) response with a Location header, THE Canary SHALL follow the redirect and evaluate the final response, following up to 5 redirect hops. A bare 3xx SHALL be treated as neither success nor failure on its own — only the final response after following the chain determines the outcome. (Rationale: a CDN such as CloudFront does not follow redirects itself; per AWS's documented behavior it relays the 3xx to the client, which is expected to follow it. See [How CloudFront processes HTTP 3xx status codes](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/http-3xx-status-codes.html).)
+5. IF following redirects reaches a redirect loop, or exceeds 5 hops, or a redirect Location is invalid, THEN THE Canary SHALL report a failure status to CloudWatch
+6. WHEN the final HTTP response (after following any redirects) has a status code outside the 2xx range, THE Canary SHALL report a failure status to CloudWatch
+7. WHEN the Canary receives no HTTP response within 30 seconds, THE Canary SHALL report a timeout failure status to CloudWatch
+8. WHEN the final HTTP response (after following any redirects) has a status code in the 2xx range, THE Canary SHALL report a success status to CloudWatch
+9. THE Canary SHALL log the originally requested URL, the final URL after redirects, the redirect chain (each hop's status code and Location), the final response status code, response body (or absence of response in timeout cases), and latency in milliseconds to the CloudWatch Log Group `/aws/synthetics/{canary-name}`
 
 ### Requirement 2: Failure Detection and Agent Invocation
 
