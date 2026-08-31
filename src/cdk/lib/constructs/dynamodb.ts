@@ -64,6 +64,8 @@ export class DynamoDatabase extends Construct {
     public petAdoptionTable: Table;
     public petFoodsTable: Table;
     public petFoodsCartTable: Table;
+    /** L1 Automated Triage deduplication table (PK canaryName, TTL expiresAt). */
+    public l1tInvestigationLocksTable: Table;
 
     /**
      * Creates a new DynamoDatabase construct with table and monitoring alarms
@@ -147,8 +149,19 @@ export class DynamoDatabase extends Construct {
             removalPolicy: RemovalPolicy.DESTROY,
         });
 
+        // L1 Automated Triage: deduplication of in-progress investigations.
+        // PK canaryName; TTL on expiresAt gives a self-cleaning 15-min dedup window.
+        this.l1tInvestigationLocksTable = new Table(this, 'ddbL1tInvestigationLocks', {
+            partitionKey: {
+                name: 'canaryName',
+                type: AttributeType.STRING,
+            },
+            timeToLiveAttribute: 'expiresAt',
+            removalPolicy: RemovalPolicy.DESTROY,
+        });
+
         NagSuppressions.addResourceSuppressions(
-            [this.petAdoptionTable, this.petFoodsCartTable, this.petFoodsTable],
+            [this.petAdoptionTable, this.petFoodsCartTable, this.petFoodsTable, this.l1tInvestigationLocksTable],
             [
                 {
                     id: 'AwsSolutions-DDB3',
@@ -198,15 +211,28 @@ export class DynamoDatabase extends Construct {
             exportName: `${DYNAMODB_TABLE_NAME_EXPORT_NAME}-PetFoodsCart`,
             description: 'Name of the DynamoDB table for pet food shopping cart',
         });
+
+        new CfnOutput(this, 'L1tInvestigationLocksTableArn', {
+            value: this.l1tInvestigationLocksTable.tableArn,
+            exportName: `${DYNAMODB_TABLE_ARN_EXPORT_NAME}-L1tInvestigationLocks`,
+            description: 'ARN of the DynamoDB table for L1 triage investigation deduplication',
+        });
+
+        new CfnOutput(this, 'L1tInvestigationLocksTableName', {
+            value: this.l1tInvestigationLocksTable.tableName,
+            exportName: `${DYNAMODB_TABLE_NAME_EXPORT_NAME}-L1tInvestigationLocks`,
+            description: 'Name of the DynamoDB table for L1 triage investigation deduplication',
+        });
     }
 
     public static importFromExports(
         scope: Construct,
         id: string,
-    ): { table: ITable; petFoodsTable: ITable; petFoodsCartTable: ITable } {
+    ): { table: ITable; petFoodsTable: ITable; petFoodsCartTable: ITable; l1tInvestigationLocksTable: ITable } {
         const tableArn = Fn.importValue(DYNAMODB_TABLE_ARN_EXPORT_NAME);
         const petFoodsTableArn = Fn.importValue(`${DYNAMODB_TABLE_ARN_EXPORT_NAME}-PetFoods`);
         const petFoodsCartTableArn = Fn.importValue(`${DYNAMODB_TABLE_ARN_EXPORT_NAME}-PetFoodsCart`);
+        const l1tLocksTableArn = Fn.importValue(`${DYNAMODB_TABLE_ARN_EXPORT_NAME}-L1tInvestigationLocks`);
 
         const petAdoptionsTable = Table.fromTableAttributes(scope, `${id}-Table`, {
             tableArn: tableArn,
@@ -221,7 +247,11 @@ export class DynamoDatabase extends Construct {
             tableArn: petFoodsCartTableArn,
         });
 
-        return { table: petAdoptionsTable, petFoodsTable, petFoodsCartTable };
+        const l1tInvestigationLocksTable = Table.fromTableAttributes(scope, `${id}-L1tLocksTable`, {
+            tableArn: l1tLocksTableArn,
+        });
+
+        return { table: petAdoptionsTable, petFoodsTable, petFoodsCartTable, l1tInvestigationLocksTable };
     }
 
     createOutputs(): void {

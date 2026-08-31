@@ -283,6 +283,21 @@ export const DYNAMO_CAPACITY_TEST_FUNCTION = {
     timeout: Duration.seconds(60),
 };
 
+/**
+ * L1 Automated Triage webhook Lambda: routes l1t-health- alarm events to the
+ * AWS DevOps Agent (DevOps2025 Agent Space) via an HMAC-signed webhook.
+ */
+export const L1_WEBHOOK_FUNCTION = {
+    name: 'l1t-webhook-node',
+    runtime: Runtime.NODEJS_22_X,
+    depsLockFilePath: '../applications/lambda/l1t-webhook-node/package-lock.json',
+    entry: '../applications/lambda/l1t-webhook-node/index.js',
+    memorySize: 256,
+    handler: 'handler',
+    enableSchedule: false,
+    timeout: Duration.seconds(30),
+};
+
 /** Map of Lambda function names to their configurations */
 export const LAMBDA_FUNCTIONS = new Map<string, WorkshopLambdaFunctionProperties>([
     [STATUS_UPDATER_FUNCTION.name, STATUS_UPDATER_FUNCTION],
@@ -293,6 +308,7 @@ export const LAMBDA_FUNCTIONS = new Map<string, WorkshopLambdaFunctionProperties
     [RDS_SEEDER_FUNCTION.name, RDS_SEEDER_FUNCTION],
     [USER_CREATOR_FUNCTION.name, USER_CREATOR_FUNCTION],
     [DYNAMO_CAPACITY_TEST_FUNCTION.name, DYNAMO_CAPACITY_TEST_FUNCTION],
+    [L1_WEBHOOK_FUNCTION.name, L1_WEBHOOK_FUNCTION],
 ]);
 
 export const PETSITE_CANARY = {
@@ -323,10 +339,23 @@ export const L1_HEALTH_CANARY = {
     path: '../applications/canaries/l1-health',
 };
 
+/**
+ * L1 Automated Triage browser (UX) canary. Loads the page, measures page-load
+ * time, verifies a key UI element; failures drive an l1t-health- alarm.
+ */
+export const L1_UX_CANARY = {
+    name: 'l1t-ux-canary',
+    runtime: new CanaryRuntime('syn-nodejs-puppeteer-11.0', RuntimeFamily.NODEJS),
+    scheduleExpression: 'rate(5 minutes)',
+    handler: 'index.handler',
+    path: '../applications/canaries/l1-ux',
+};
+
 export const CANARY_FUNCTIONS = new Map([
     [PETSITE_CANARY.name, PETSITE_CANARY],
     [HOUSEKEEPING_CANARY.name, HOUSEKEEPING_CANARY],
     [L1_HEALTH_CANARY.name, L1_HEALTH_CANARY],
+    [L1_UX_CANARY.name, L1_UX_CANARY],
 ]);
 
 /** Maximum number of Availability Zones to use for high availability */

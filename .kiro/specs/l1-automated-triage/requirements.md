@@ -51,9 +51,9 @@ The system is designed to maximize reuse of existing detection infrastructure. T
 #### Acceptance Criteria
 
 1. WHEN a Canary reports a failure status (execution result of "FAILED" or "TIMEOUT"), THE CloudWatch Alarm SHALL transition to ALARM state within 60 seconds of the failure being recorded
-2. WHEN the CloudWatch Alarm transitions to ALARM state, THE EventBridge Rule SHALL route the alarm event to the Webhook Lambda within 30 seconds
-3. WHEN the Webhook_Lambda receives an alarm event, THE Webhook_Lambda SHALL invoke the DevOps_Agent with the canary name, alarm name, alarm state change timestamp, and alarm reason within 30 seconds of receiving the event
-4. IF the Webhook_Lambda fails to invoke the DevOps_Agent (invocation returns an error response or no response is received within 30 seconds), THEN THE Webhook_Lambda SHALL retry the invocation up to 3 times with exponential backoff starting at a 1-second base delay and doubling on each subsequent attempt
+2. WHEN the CloudWatch Alarm transitions to ALARM state, THE EventBridge Rule (on the account default event bus, where CloudWatch delivers alarm state-change events) SHALL route the alarm event to the Webhook Lambda within 30 seconds
+3. WHEN the Webhook_Lambda receives an alarm event, THE Webhook_Lambda SHALL invoke the DevOps_Agent by sending an HMAC-authenticated HTTP POST to the DevOps2025 Agent Space webhook (headers `Content-Type`, `x-amzn-event-signature` = HMAC-SHA256 of timestamp+body, `x-amzn-event-timestamp`; body containing eventType, incidentId, action, priority, title, description carrying the canary name, alarm name, alarm state change timestamp, and alarm reason) within 30 seconds of receiving the event
+4. IF the Webhook_Lambda fails to invoke the DevOps_Agent (webhook returns a non-2xx response or no response is received within the request timeout), THEN THE Webhook_Lambda SHALL retry the invocation up to 3 times with exponential backoff starting at a 1-second base delay and doubling on each subsequent attempt
 5. IF all retry attempts fail, THEN THE Webhook_Lambda SHALL publish a failure notification to the #l1-triage-alerts Slack channel within 60 seconds of the final retry failure, indicating the canary name and that triage could not be initiated
 6. IF the Webhook_Lambda receives an alarm event for a canary that already has a DevOps_Agent invocation in progress, THEN THE Webhook_Lambda SHALL skip the duplicate invocation and log the event without triggering a new investigation
 
@@ -167,3 +167,15 @@ The system is designed to maximize reuse of existing detection infrastructure. T
 4. WHEN the infrastructure stack is deployed, THE stack SHALL create IAM roles for each component scoped to only the permissions required by that component, with no wildcard (*) resource ARNs except where the AWS service requires them
 5. IF a stack deployment fails, THEN THE Infrastructure_Code SHALL roll back all resources to their prior state and report the failure reason in the deployment output
 6. WHEN the infrastructure stack is redeployed with no parameter or template changes, THE stack SHALL complete successfully without creating duplicate resources or failing due to existing resource conflicts
+
+
+### Requirement 12: Extended Detection (Latency and User-Experience)
+
+**User Story:** As an operations engineer, I want the system to also detect slow-but-successful responses and browser-level (page-load / UI) problems, so that degradation and front-end failures trigger triage, not just hard API failures.
+
+#### Acceptance Criteria
+
+1. THE system SHALL define a latency CloudWatch Alarm on the L1 health canary's duration/latency metric that transitions to ALARM when the observed latency exceeds a configured threshold, even when the health check returns a 2xx status. This alarm SHALL use the `l1t-health-` name prefix so it enters the same routing path as the availability alarm.
+2. THE system SHALL provide a browser-based (CloudWatch Synthetics Puppeteer) canary that loads the target page, measures page-load timing, and verifies the presence of a configured key UI element, so that browser-only failures (broken/missing UI, rendering errors) are detected. This canary SHALL be independently deployable and separable from the API health canary and the routing path.
+3. WHEN the browser-based canary fails, THE system SHALL surface the failure via a CloudWatch Alarm using the `l1t-health-` name prefix so it can trigger the same routing → DevOps Agent flow.
+4. THE latency threshold and the key UI element selector SHALL be deploy-time configurable inputs, so the extended detection is application-agnostic.

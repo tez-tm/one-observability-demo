@@ -64,11 +64,11 @@ Each slice ends with a deployability checkpoint (`cdk synth`/build + the slice's
   - [ ] 3.2 Create the `L1WebhookLambda` construct extending `WorkshopLambdaFunction`
     - Node.js handler under `src/cdk/lib/serverless/functions/` (+ code under `src/applications/lambda/`), inheriting DLQ, structured logging, X-Ray, Application Signals
     - Parse the alarm event (canary name, alarm name, state-change timestamp, reason); perform a conditional put on the locks table for dedup; skip and log duplicates
-    - Invoke the DevOps Agent with retry (exponential backoff 1s/2s/4s, max 3); at this slice the agent invocation is a **log-only stub**
+    - Invoke the AWS DevOps Agent by POSTing an HMAC-signed webhook to the DevOps2025 Agent Space: build body `{eventType:"incident", incidentId, action:"created", priority, title, description, timestamp}`, sign with HMAC-SHA256 over `x-amzn-event-timestamp` + body using the signing secret, send headers `Content-Type`/`x-amzn-event-signature`/`x-amzn-event-timestamp`; read `{webhookUrl, hmacSecret}` from Secrets Manager; retry 3x exponential backoff (1s/2s/4s) on non-2xx/no-response
     - _Requirements: 2.3, 2.4, 2.6_
 
-  - [ ] 3.3 Create the EventBridge rule on the existing `workshop-eventbus`
-    - Import the bus via `EventBusResources.importFromExports`; rule pattern filters `aws.cloudwatch` "CloudWatch Alarm State Change", `alarmName` prefix `l1t-health-`, state `ALARM`; target the Webhook Lambda; configure EventBridge DLQ/retry
+  - [ ] 3.3 Create the EventBridge rule on the **default event bus**
+    - CloudWatch delivers alarm state-change events to the account default bus (NOT `workshop-eventbus`); reference it via `EventBus.fromEventBusName(this,'DefaultEventBus','default')`; rule pattern filters `aws.cloudwatch` "CloudWatch Alarm State Change", `alarmName` prefix `l1t-health-`, state `ALARM`; target the Webhook Lambda with an SQS DLQ
     - _Requirements: 2.2_
 
   - [ ] 3.4 Implement the Slack fallback notification on retry exhaustion
@@ -81,12 +81,24 @@ Each slice ends with a deployability checkpoint (`cdk synth`/build + the slice's
     - _Requirements: 2.4, 2.5, 2.6_
 
   - [ ]* 3.6 Write CDK infrastructure/snapshot test for rule, Lambda, and locks table
-    - Assert the rule event pattern, Lambda wiring, TTL-enabled table, and least-privilege IAM
+    - Assert the rule event pattern (default bus, `l1t-health-` prefix, ALARM), Lambda wiring, TTL-enabled table, and least-privilege IAM
     - _Requirements: 11.1, 11.4_
+
+  - [ ] 3.7 Create the DevOps Agent webhook secret and Slack webhook secret (Secrets Manager)
+    - Create a Secrets Manager secret holding `{webhookUrl, hmacSecret}` for the DevOps2025 Agent Space (placeholder value; operator populates post-deploy), and a Slack webhook secret; grant the Webhook Lambda `secretsmanager:GetSecretValue` scoped to each ARN
+    - _Requirements: 2.3, 2.5, 11.4_
+
+  - [ ] 3.8 Add the latency CloudWatch alarm on the L1 canary (Requirement 12.1)
+    - Net-new alarm on the canary duration/latency metric, `l1t-health-` name prefix, threshold deploy-time configurable; enters the same routing path so slow-but-2xx also triggers triage
+    - _Requirements: 12.1, 12.4_
+
+  - [ ] 3.9 Scaffold the browser-based page-load/UI canary (Requirement 12.2/12.3)
+    - New Synthetics Puppeteer canary construct + script: load the target page, measure page-load timing, verify a configured key UI element; add a `l1t-health-` prefixed availability alarm; keep independently deployable and separable from routing
+    - _Requirements: 12.2, 12.3, 12.4_
 
 - [ ] 4. Checkpoint — Slice 2 deployable and testable
   - Run the CDK build and `cdk synth`; ensure all Slice 2 tests pass
-  - Validation after `cdk deploy`: force the alarm to ALARM and confirm the Webhook Lambda fires (log-only agent stub)
+  - Validation after `cdk deploy`: force an `l1t-health-` alarm to ALARM and confirm EventBridge (default bus) routes to the Webhook Lambda, which dedups and attempts the DevOps Agent webhook (verify at log level while the HMAC secret is a placeholder), with Slack fallback on exhaustion
   - Ensure all tests pass, ask the user if questions arise.
 
 - [ ] 5. Slice 3 — Dependency resolution: telemetry-first Dependency Resolver MCP, optional overlay, and weekly reconcile
@@ -223,6 +235,13 @@ Each slice ends with a deployability checkpoint (`cdk synth`/build + the slice's
 - New constructs extend existing base classes (`WorkshopCanary`, `WorkshopLambdaFunction`), reuse the existing `workshop-eventbus` and canary artifacts bucket, and add `l1t-*` tables via the established storage-layer DynamoDB pattern. The `l1t-service-dependencies` table is an **optional overlay**, not the primary dependency source.
 - Dependency resolution is **telemetry-first**: the Dependency Resolver MCP queries CloudWatch Application Signals (`ListServiceDependencies` + `ListServiceDependents`) first, falls back to the X-Ray service graph (`GetServiceGraph`), and only then consults the optional DynamoDB overlay. This keeps the system application-agnostic. The resolver/agent role needs `application-signals:ListServiceDependencies`, `application-signals:ListServiceDependents`, `xray:GetServiceGraph`, and `dynamodb:GetItem` on the overlay table (least-privilege per Req 11.4).
 - All resources deploy via `cdk deploy` to a deploy-time account parameter (Isengard-friendly) with no manual console steps.
+
+## Candidate Follow-Ups (post Slices 2–5)
+
+These extend detection coverage beyond backend/API availability once the detection → triage plumbing (Slices 2–5) exists. Not in scope for the current slices.
+
+- **UI-glitch coverage via the browser canary.** The L1 API health canary is blind to browser-only failures (broken/missing buttons, JavaScript/rendering/styling errors, browser timing/race conditions) because it makes raw API requests and never renders a page. To triage these, extend Slice 2's EventBridge routing rule to also trigger off the existing browser canary's (`petsite-canary`) failure alarm, so UI-experience failures enter the same triage flow. Note the root-cause signal from a browser failure is messier (UI vs. timing vs. network vs. backend) and the triage skill would need a UI-oriented branch.
+- **Latency/slowness alerting (not just availability).** The L1 canary already records per-request latency in its structured logs, but the Slice 1 alarm only fires on failure (non-2xx or timeout > 30s); a slow-but-successful response (e.g. 200 OK after 8s) is logged as success and does not alarm. Add a separate latency alarm (e.g. p90 response time > threshold) alongside the availability alarm to catch degradation before it becomes an outage. This measures API/backend response time, not full page-render time.
 
 ## Task Dependency Graph
 

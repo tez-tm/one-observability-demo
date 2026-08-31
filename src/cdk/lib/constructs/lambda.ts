@@ -22,6 +22,7 @@ import { Construct } from 'constructs';
 import { IVpc, ISecurityGroup, SubnetSelection } from 'aws-cdk-lib/aws-ec2';
 import { ManagedPolicy, Role, ServicePrincipal } from 'aws-cdk-lib/aws-iam';
 import {
+    L1_WEBHOOK_FUNCTION,
     PETFOOD_CLEANUP_PROCESSOR_FUNCTION,
     PETFOOD_IMAGE_GENERATOR_FUNCTION,
     PETFOOD_STOCK_PROCESSOR_FUNCTION,
@@ -243,6 +244,7 @@ export const LambdaFunctionNames = {
     RdsSeeder: 'rds-seeder',
     UserCreator: 'user-creator',
     DynamoCapacityTest: 'dynamo-capacity-test',
+    L1tWebhook: L1_WEBHOOK_FUNCTION.name,
 } as const;
 
 /**

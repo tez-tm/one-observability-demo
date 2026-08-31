@@ -23,7 +23,7 @@ import { RetentionDays } from 'aws-cdk-lib/aws-logs';
 import { IBucket } from 'aws-cdk-lib/aws-s3';
 import { Canary, Code, ResourceToReplicateTags, Runtime, Schedule, Test } from 'aws-cdk-lib/aws-synthetics';
 import { Construct } from 'constructs';
-import { HOUSEKEEPING_CANARY, L1_HEALTH_CANARY, PETSITE_CANARY } from '../../bin/environment';
+import { HOUSEKEEPING_CANARY, L1_HEALTH_CANARY, L1_UX_CANARY, PETSITE_CANARY } from '../../bin/environment';
 import { NagSuppressions } from 'cdk-nag';
 
 /** Properties for configuring a CloudWatch Synthetics canary. */
@@ -51,6 +51,8 @@ export const CanaryNames = {
     HouseKeeping: HOUSEKEEPING_CANARY.name,
     /** L1 Automated Triage health-check canary name */
     L1Health: L1_HEALTH_CANARY.name,
+    /** L1 Automated Triage browser (UX) canary name */
+    L1Ux: L1_UX_CANARY.name,
 } as const;
 
 /** Abstract base class for CloudWatch Synthetics canaries with IAM role creation and schedule configuration. */

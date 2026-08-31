@@ -50,9 +50,9 @@ flowchart TD
     end
 
     subgraph Investigation
-        CW -->|ALARM state| EB[EventBridge Rule<br/>workshop-eventbus]
+        CW -->|ALARM state| EB[EventBridge Rule<br/>default bus]
         EB -->|route| WH[Webhook Lambda]
-        WH -->|invoke| DA[DevOps Agent]
+        WH -->|HMAC webhook POST| DA[DevOps Agent<br/>DevOps2025 Agent Space]
         DA -->|step 1| CWL[CloudWatch Logs]
         DA -->|step 2| URL[URL Parser]
         DA -->|step 3| MCP[Dependency Resolver MCP<br/>App Signals → X-Ray → overlay]
@@ -129,7 +129,7 @@ interface L1HealthCanaryProperties extends WorkshopCanaryProperties {
 
 **Alarm**: One alarm per canary, configured to transition to ALARM on any single failure (evaluation period = 1, threshold = 1 failed execution). This availability alarm is built on the canary `SuccessPercent` metric and is net-new — the existing stack has DynamoDB throttle alarms but no canary-availability alarm.
 
-**EventBridge Rule**: Filters on the existing `workshop-eventbus` for CloudWatch Alarm state change events matching pattern:
+**EventBridge Rule**: Filters CloudWatch Alarm state change events matching pattern:
 ```json
 {
     "source": ["aws.cloudwatch"],
@@ -141,26 +141,32 @@ interface L1HealthCanaryProperties extends WorkshopCanaryProperties {
 }
 ```
 
-**Design Decision**: Use the existing `workshop-eventbus` rather than the default bus. This keeps triage events isolated alongside the existing petfood event-driven architecture and allows event replay for debugging.
+**Design Decision — bus selection (corrected):** The rule is created on the **default event bus**, NOT `workshop-eventbus`. CloudWatch Alarm state-change events are delivered by the CloudWatch service to the account's **default** EventBridge bus only; they do not appear on custom buses. (An earlier draft placed this rule on `workshop-eventbus`, which would never match — verified against the codebase, which has no mechanism routing alarm events to the custom bus.) The rule targets the Webhook Lambda and is configured with an SQS DLQ for the target.
 
 ### 3. Webhook Lambda
 
-A Node.js Lambda function that receives alarm events and invokes the DevOps Agent.
+A Node.js Lambda function that receives alarm events and invokes the **AWS DevOps Agent** by posting to the `DevOps2025` Agent Space's generic webhook.
 
 ```typescript
 interface WebhookLambdaProperties extends WorkshopLambdaFunctionProperties {
-    /** DevOps Agent endpoint URL or ARN */
-    devopsAgentEndpoint: string;
+    /** Secrets Manager ARN holding { webhookUrl, hmacSecret } for the DevOps Agent webhook */
+    devopsWebhookSecretArn: string;
     /** DynamoDB table for deduplication state */
     deduplicationTable: ITable;
-    /** Slack webhook URL (fallback notifications) */
-    slackWebhookUrl: string;
+    /** Secrets Manager ARN holding the Slack webhook URL (fallback notifications) */
+    slackWebhookSecretArn: string;
 }
 ```
 
-**Deduplication Strategy**: Uses a DynamoDB table with TTL to track in-progress investigations. Key = canary name, TTL = 15 minutes. Before invoking the agent, the Lambda performs a conditional put; if the item already exists, the invocation is skipped and the event is logged.
+**Target — AWS DevOps Agent (verified contract):** The DevOps Agent service supports the CloudWatch Alarm → Lambda → **HMAC-authenticated webhook** pattern. The `DevOps2025` Agent Space exposes a generic (Agent Space) webhook. To trigger an investigation, the Lambda sends an HTTP `POST` to the webhook URL with:
+- Headers: `Content-Type: application/json`, `x-amzn-event-signature: <HMAC-SHA256 of timestamp+body using the signing secret>`, `x-amzn-event-timestamp: <ISO 8601 UTC>`
+- Body: `{ eventType: "incident", incidentId, action: "created", priority, title, description, timestamp }`
 
-**Retry Logic**: Exponential backoff (1s, 2s, 4s) with 3 max attempts. On exhaustion, posts a failure notification to Slack with the canary name.
+The webhook URL and HMAC signing secret are stored together in a Secrets Manager secret (`devopsWebhookSecretArn`). Because the DevOps Agent console only reveals the webhook secret once at creation (and never via API/IaC), the CDK creates the secret with a **placeholder** value; an operator populates the real `webhookUrl` + `hmacSecret` post-deploy (or rotates the webhook to obtain a fresh secret). The `DevOps2025` Agent Space already has access to the pet EKS cluster, so the agent can investigate cluster-side.
+
+**Deduplication Strategy**: DynamoDB table (`l1t-investigation-locks`) with TTL to track in-progress investigations. Key = `canaryName`, TTL = 15 minutes (`expiresAt`). Before invoking the agent, the Lambda performs a conditional put; if the item already exists, the invocation is skipped and the event is logged.
+
+**Retry Logic**: Exponential backoff (1s, 2s, 4s) with 3 max attempts against the webhook. On exhaustion, posts a failure notification to Slack (`#l1-triage-alerts`, URL from Secrets Manager) with the canary name.
 
 **Integration**: Extends `WorkshopLambdaFunction` base class to inherit DLQ, structured logging, X-Ray tracing, and Application Signals instrumentation.
 
@@ -356,7 +362,7 @@ interface InvestigationLock {
     canaryName: string;    // PK: "l1t-health-payforadoption"
     startedAt: string;     // ISO 8601
     agentInvocationId: string;
-    ttl: number;           // Unix epoch + 900 (15 min)
+    expiresAt: number;     // TTL attribute: Unix epoch + 900 (15 min)
 }
 ```
 
@@ -564,8 +570,8 @@ New resources are added to the `applications` stage (consistent with existing ca
 
 1. **`L1HealthCanary`** — new construct extending `WorkshopCanary`, registered in the canaries map
 2. **CloudWatch Alarm** — attached to canary success percentage (`SuccessPercent`) metric (net-new; no canary-availability alarm exists in the base stack)
-3. **EventBridge Rule** — on existing `workshop-eventbus`, targeting Webhook Lambda
-4. **`L1WebhookLambda`** — new construct extending `WorkshopLambdaFunction`
+3. **EventBridge Rule** — on the **default event bus** (where CloudWatch delivers alarm state-change events), targeting the Webhook Lambda with an SQS DLQ
+4. **`L1WebhookLambda`** — new construct extending `WorkshopLambdaFunction`, posts an HMAC-signed webhook to the `DevOps2025` DevOps Agent Space
 5. **`l1t-service-dependencies` DynamoDB table** — optional declared overlay, added to `StorageStack` alongside existing tables
 6. **`l1t-investigation-locks` DynamoDB table** — TTL-enabled, for deduplication
 7. **Overlay Reconcile Lambda** — scheduled weekly via EventBridge, reconciles the seed source into the overlay table

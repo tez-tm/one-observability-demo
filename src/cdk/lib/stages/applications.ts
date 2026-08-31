@@ -76,6 +76,9 @@ import { HouseKeepingCanary } from '../serverless/canaries/housekeeping/housekee
 import { TrafficGeneratorCanary } from '../serverless/canaries/traffic-generator/traffic-generator';
 import { L1HealthCanary } from '../serverless/canaries/l1-health/l1-health';
 import { ComparisonOperator, TreatMissingData } from 'aws-cdk-lib/aws-cloudwatch';
+import { L1WebhookFunction } from '../serverless/functions/l1t-webhook/l1t-webhook';
+import { Secret } from 'aws-cdk-lib/aws-secretsmanager';
+import { L1UxCanary } from '../serverless/canaries/l1-ux/l1-ux';
 import { NagSuppressions } from 'cdk-nag';
 import { PetfoodCleanupProcessorFunction } from '../serverless/functions/petfood/cleanup-processor';
 import { PetfoodImageGeneratorFunction } from '../serverless/functions/petfood/image-generator';
@@ -536,6 +539,44 @@ export class MicroservicesStack extends Stack {
                         evaluationPeriods: 1,
                         treatMissingData: TreatMissingData.NOT_BREACHING,
                     });
+
+                // Latency alarm (Requirement 12.1): fires on slow-but-successful
+                // responses so degradation also enters the triage path. Uses the
+                // l1t-health- prefix so it routes through the same rule.
+                l1HealthCanary.canary
+                    .metricDuration({ statistic: 'Average' })
+                    .createAlarm(this, 'L1HealthLatencyAlarm', {
+                        alarmName: `l1t-health-${l1HealthCanary.canary.canaryName}-latency`,
+                        alarmDescription:
+                            'L1 Automated Triage: canary response latency exceeded the configured threshold',
+                        threshold: 5000, // ms; deploy-time tunable
+                        comparisonOperator: ComparisonOperator.GREATER_THAN_THRESHOLD,
+                        evaluationPeriods: 3,
+                        treatMissingData: TreatMissingData.NOT_BREACHING,
+                    });
+            }
+            if (name == CanaryNames.L1Ux) {
+                const l1UxCanary = new L1UxCanary(this, name, {
+                    ...canaryProperties,
+                    artifactsBucket: canaryArtifactBucket,
+                    targetUrlParameterName: `${PARAMETER_STORE_PREFIX}/${SSM_PARAMETER_NAMES.PETSITE_URL}`,
+                    keySelector: '.pet-header',
+                    maxLoadMs: 10000,
+                });
+
+                // Browser-canary failure (page won't load / key UI element
+                // missing) drives an l1t-health- alarm into the triage path.
+                l1UxCanary.canary
+                    .metricSuccessPercent({ statistic: 'Average' })
+                    .createAlarm(this, 'L1UxAvailabilityAlarm', {
+                        alarmName: `l1t-health-${l1UxCanary.canary.canaryName}-availability`,
+                        alarmDescription:
+                            'L1 Automated Triage: browser canary failed (page load or key UI element missing)',
+                        threshold: 100,
+                        comparisonOperator: ComparisonOperator.LESS_THAN_THRESHOLD,
+                        evaluationPeriods: 1,
+                        treatMissingData: TreatMissingData.NOT_BREACHING,
+                    });
             }
         }
 
@@ -606,6 +647,43 @@ export class MicroservicesStack extends Stack {
             if (name == LambdaFunctionNames.DynamoCapacityTest) {
                 new DynamoDBWriteTestConstruct(this, name, {
                     ...lambdafunction,
+                });
+            }
+            if (name == LambdaFunctionNames.L1tWebhook) {
+                // Secrets for the DevOps Agent webhook and the Slack fallback.
+                // Created with placeholder values; an operator populates the
+                // real DevOps2025 Agent Space webhook URL + HMAC secret post-deploy.
+                const devopsWebhookSecret = new Secret(this, 'L1tDevopsWebhookSecret', {
+                    secretName: 'l1t-devops-agent-webhook',
+                    description: 'DevOps2025 Agent Space webhook: { webhookUrl, hmacSecret }. Populate post-deploy.',
+                    generateSecretString: {
+                        secretStringTemplate: JSON.stringify({ webhookUrl: 'PLACEHOLDER', hmacSecret: 'PLACEHOLDER' }),
+                        generateStringKey: 'unused',
+                    },
+                });
+                const slackWebhookSecret = new Secret(this, 'L1tSlackWebhookSecret', {
+                    secretName: 'l1t-slack-webhook',
+                    description: 'Slack fallback webhook: { webhookUrl }. Populate post-deploy.',
+                    generateSecretString: {
+                        secretStringTemplate: JSON.stringify({ webhookUrl: 'PLACEHOLDER' }),
+                        generateStringKey: 'unused',
+                    },
+                });
+
+                NagSuppressions.addResourceSuppressions(
+                    [devopsWebhookSecret, slackWebhookSecret],
+                    [
+                        { id: 'AwsSolutions-SMG4', reason: 'Webhook secrets are populated/rotated out-of-band by an operator; automatic rotation is not applicable to third-party webhook credentials' },
+                    ],
+                    true,
+                );
+
+                new L1WebhookFunction(this, name, {
+                    ...lambdafunction,
+                    locksTable: imports.dynamodbExports.l1tInvestigationLocksTable,
+                    devopsWebhookSecret,
+                    slackWebhookSecret,
+                    dedupTtlSeconds: 900,
                 });
             }
         }
