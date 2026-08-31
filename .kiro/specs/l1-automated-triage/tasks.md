@@ -92,8 +92,9 @@ Each slice ends with a deployability checkpoint (`cdk synth`/build + the slice's
     - Net-new alarm on the canary duration/latency metric, `l1t-health-` name prefix, threshold deploy-time configurable; enters the same routing path so slow-but-2xx also triggers triage
     - _Requirements: 12.1, 12.4_
 
-  - [ ] 3.9 Scaffold the browser-based page-load/UI canary (Requirement 12.2/12.3)
-    - New Synthetics Puppeteer canary construct + script: load the target page, measure page-load timing, verify a configured key UI element; add a `l1t-health-` prefixed availability alarm; keep independently deployable and separable from routing
+  - [x] 3.9 Scaffold the browser-based page-load/UI canary (Requirement 12.2/12.3)
+    - New Synthetics Puppeteer canary construct + script: visit the home page plus the PetSite nav journey (adoption list, buy food, Waggle AI, housekeeping); on each page assert real content rendered (primary signal), check a secondary generic error indicator, and watch network responses (>=400) + uncaught JS errors; add a `l1t-health-` prefixed availability alarm; keep independently deployable and separable from routing
+    - Fixed post-deploy after a real Level-2 failure injection (petlistadoption-py scaled to 0) proved the original "check one structural selector" design missed it: the app rendered the outage as an HTTP 200 page with an error banner in place of the adoption list, which both the health and UX canaries initially passed. Redesigned to assert real per-page content instead, and validated it explicitly reproduces detection of this failure mode via unit tests
     - _Requirements: 12.2, 12.3, 12.4_
 
 - [ ] 4. Checkpoint — Slice 2 deployable and testable
