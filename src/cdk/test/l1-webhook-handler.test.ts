@@ -83,13 +83,30 @@ describe('buildIncidentPayload', () => {
     });
 });
 
-describe('computeSignature', () => {
-    test('matches an independent HMAC-SHA256 over timestamp+body', () => {
-        const secret = 'topsecret';
-        const ts = '2026-01-15T10:30:00.000Z';
-        const body = JSON.stringify({ a: 1 });
-        const expected = crypto.createHmac('sha256', secret).update(ts + body).digest('hex');
+describe('computeSignature (AWS DevOps Agent HMAC / Version 1 contract)', () => {
+    // Contract: sign `${timestamp}:${body}` (colon-joined) with HMAC-SHA256 and
+    // base64-encode the digest. Ref: AWS DevOps Agent User Guide, "Invoking
+    // DevOps Agent through Webhook" -> Example code (Version 1, HMAC).
+    const secret = 'topsecret';
+    const ts = '2026-01-15T10:30:00.000Z';
+    const body = JSON.stringify({ a: 1 });
+
+    test('matches the colon-joined, base64-encoded HMAC-SHA256 from the docs', () => {
+        const expected = crypto.createHmac('sha256', secret).update(`${ts}:${body}`, 'utf8').digest('base64');
         expect(computeSignature(secret, ts, body)).toBe(expected);
+    });
+
+    test('is base64, not hex (hex would be rejected by the agent)', () => {
+        const sig = computeSignature(secret, ts, body);
+        // base64 alphabet only; a hex digest would be 64 chars of [0-9a-f].
+        expect(sig).toMatch(/^[A-Za-z0-9+/]+=*$/);
+        const hex = crypto.createHmac('sha256', secret).update(`${ts}:${body}`, 'utf8').digest('hex');
+        expect(sig).not.toBe(hex);
+    });
+
+    test('uses the colon separator, not bare concatenation', () => {
+        const wrongNoColon = crypto.createHmac('sha256', secret).update(ts + body, 'utf8').digest('base64');
+        expect(computeSignature(secret, ts, body)).not.toBe(wrongNoColon);
     });
 });
 

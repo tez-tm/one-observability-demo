@@ -64,7 +64,7 @@ Each slice ends with a deployability checkpoint (`cdk synth`/build + the slice's
   - [ ] 3.2 Create the `L1WebhookLambda` construct extending `WorkshopLambdaFunction`
     - Node.js handler under `src/cdk/lib/serverless/functions/` (+ code under `src/applications/lambda/`), inheriting DLQ, structured logging, X-Ray, Application Signals
     - Parse the alarm event (canary name, alarm name, state-change timestamp, reason); perform a conditional put on the locks table for dedup; skip and log duplicates
-    - Invoke the AWS DevOps Agent by POSTing an HMAC-signed webhook to the DevOps2025 Agent Space: build body `{eventType:"incident", incidentId, action:"created", priority, title, description, timestamp}`, sign with HMAC-SHA256 over `x-amzn-event-timestamp` + body using the signing secret, send headers `Content-Type`/`x-amzn-event-signature`/`x-amzn-event-timestamp`; read `{webhookUrl, hmacSecret}` from Secrets Manager; retry 3x exponential backoff (1s/2s/4s) on non-2xx/no-response
+    - Invoke the AWS DevOps Agent by POSTing an HMAC-signed webhook to the DevOps2025 Agent Space: build body `{eventType:"incident", incidentId, action:"created", priority, title, description, timestamp}`, sign per the DevOps Agent HMAC/Version 1 contract — `signature = base64(HMAC-SHA256(signingSecret, "<x-amzn-event-timestamp>:<body>"))` (timestamp and body colon-joined, base64 not hex), send headers `Content-Type`/`x-amzn-event-signature`/`x-amzn-event-timestamp`; read `{webhookUrl, hmacSecret}` from Secrets Manager; retry 3x exponential backoff (1s/2s/4s) on non-2xx/no-response
     - _Requirements: 2.3, 2.4, 2.6_
 
   - [ ] 3.3 Create the EventBridge rule on the **default event bus**

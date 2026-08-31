@@ -158,9 +158,9 @@ interface WebhookLambdaProperties extends WorkshopLambdaFunctionProperties {
 }
 ```
 
-**Target — AWS DevOps Agent (verified contract):** The DevOps Agent service supports the CloudWatch Alarm → Lambda → **HMAC-authenticated webhook** pattern. The `DevOps2025` Agent Space exposes a generic (Agent Space) webhook. To trigger an investigation, the Lambda sends an HTTP `POST` to the webhook URL with:
-- Headers: `Content-Type: application/json`, `x-amzn-event-signature: <HMAC-SHA256 of timestamp+body using the signing secret>`, `x-amzn-event-timestamp: <ISO 8601 UTC>`
-- Body: `{ eventType: "incident", incidentId, action: "created", priority, title, description, timestamp }`
+**Target — AWS DevOps Agent (verified contract):** The DevOps Agent service supports the CloudWatch Alarm → Lambda → **HMAC-authenticated webhook** pattern. The `DevOps2025` Agent Space exposes a generic (Agent Space) webhook. To trigger an investigation, the Lambda sends an HTTP `POST` to the webhook URL with (per the AWS DevOps Agent User Guide, "Invoking DevOps Agent through Webhook" → Example code, HMAC / Version 1):
+- Headers: `Content-Type: application/json`, `x-amzn-event-timestamp: <ISO 8601 UTC, e.g. 2025-11-23T18:00:00.000Z>`, `x-amzn-event-signature: <signature>` where `signature = base64( HMAC-SHA256( signingSecret, `${timestamp}:${body}` ) )` — the timestamp and the serialized JSON body are joined by a **colon**, hashed with SHA-256, and the digest is **base64**-encoded (not hex). Including the timestamp in the signed material gives replay protection.
+- Body: `{ eventType: "incident", incidentId, action: "created", priority, title, description, timestamp }` (optional `service`, `data` also supported)
 
 The webhook URL and HMAC signing secret are stored together in a Secrets Manager secret (`devopsWebhookSecretArn`). Because the DevOps Agent console only reveals the webhook secret once at creation (and never via API/IaC), the CDK creates the secret with a **placeholder** value; an operator populates the real `webhookUrl` + `hmacSecret` post-deploy (or rotates the webhook to obtain a fresh secret). The `DevOps2025` Agent Space already has access to the pet EKS cluster, so the agent can investigate cluster-side.
 

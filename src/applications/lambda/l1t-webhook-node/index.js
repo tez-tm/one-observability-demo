@@ -22,9 +22,9 @@ SPDX-License-Identifier: Apache-2.0
  *   POST <webhookUrl>
  *   headers:
  *     Content-Type: application/json
- *     x-amzn-event-timestamp: <ISO 8601 UTC>
- *     x-amzn-event-signature: <hex HMAC-SHA256(secret, timestamp + body)>
- *   body: { eventType, incidentId, action, priority, title, description, timestamp }
+ *     x-amzn-event-timestamp: <ISO 8601 UTC, e.g. 2025-11-23T18:00:00.000Z>
+ *     x-amzn-event-signature: base64( HMAC-SHA256(secret, `${timestamp}:${body}`) )
+ *   body: { eventType, incidentId, action, priority, title, description, timestamp[, service, data] }
  *
  * Configuration (environment variables set by the CDK construct):
  *   L1T_LOCKS_TABLE_NAME          DynamoDB dedup table
@@ -179,15 +179,21 @@ function buildIncidentPayload(parsed, incidentId) {
 }
 
 /**
- * Compute the HMAC-SHA256 signature over timestamp + body.
+ * Compute the HMAC-SHA256 signature per the AWS DevOps Agent webhook contract
+ * (HMAC / Version 1): sign the string `${timestamp}:${payload}` (timestamp and
+ * body joined by a colon) with the secret, and base64-encode the digest.
+ *
+ * Ref: AWS DevOps Agent User Guide — "Invoking DevOps Agent through Webhook",
+ * Example code (Version 1, HMAC): hmac.update(`${timestamp}:${payload}`);
+ * signature = hmac.digest("base64").
  *
  * @param {string} hmacSecret
- * @param {string} timestamp
- * @param {string} body
- * @returns {string} hex signature
+ * @param {string} timestamp ISO 8601 UTC used verbatim in the x-amzn-event-timestamp header
+ * @param {string} body serialized JSON request body (signed verbatim)
+ * @returns {string} base64 signature
  */
 function computeSignature(hmacSecret, timestamp, body) {
-    return crypto.createHmac('sha256', hmacSecret).update(timestamp + body).digest('hex');
+    return crypto.createHmac('sha256', hmacSecret).update(`${timestamp}:${body}`, 'utf8').digest('base64');
 }
 
 /**
