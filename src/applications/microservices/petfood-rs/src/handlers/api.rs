@@ -83,10 +83,27 @@ pub fn create_api_router(
     food_type = query.food_type.as_deref(),
     search = query.search.as_deref(),
 ))]
+#[allow(unreachable_code)]
 pub async fn list_foods(
     State(state): State<ApiState>,
     Query(query): Query<ListFoodsQuery>,
 ) -> Result<Json<FoodListApiResponse>, (StatusCode, Json<Value>)> {
+    // INJECTED-TEST-FAILURE: L1 automated triage validation (temporary).
+    // Forces GET /api/foods to fail so the UX canary's buy-food step fails,
+    // which should trip the l1t-health- alarm and drive the EventBridge ->
+    // webhook -> DevOps Agent triage path. Revert this block (delete this
+    // early return and the #[allow(unreachable_code)] attribute above)
+    // once validated.
+    error!("INJECTED-TEST-FAILURE: forcing list_foods failure for L1 triage validation");
+    return Err((
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({
+            "error": "injected-test-failure",
+            "message": "L1 automated triage validation: intentional failure",
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        })),
+    ));
+
     info!("Listing foods with filters");
 
     // Convert query parameters to filters
