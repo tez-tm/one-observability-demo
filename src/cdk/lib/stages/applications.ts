@@ -79,6 +79,7 @@ import { ComparisonOperator, TreatMissingData } from 'aws-cdk-lib/aws-cloudwatch
 import { L1WebhookFunction } from '../serverless/functions/l1t-webhook/l1t-webhook';
 import { Secret } from 'aws-cdk-lib/aws-secretsmanager';
 import { L1UxCanary } from '../serverless/canaries/l1-ux/l1-ux';
+import { L1CartCanary } from '../serverless/canaries/l1-cart/l1-cart';
 import { NagSuppressions } from 'cdk-nag';
 import { PetfoodCleanupProcessorFunction } from '../serverless/functions/petfood/cleanup-processor';
 import { PetfoodImageGeneratorFunction } from '../serverless/functions/petfood/image-generator';
@@ -639,6 +640,32 @@ export class MicroservicesStack extends Stack {
                         alarmName: `l1t-health-${l1UxCanary.canary.canaryName}-availability`,
                         alarmDescription:
                             'L1 Automated Triage: browser canary failed (page load or key UI element missing)',
+                        threshold: 100,
+                        comparisonOperator: ComparisonOperator.LESS_THAN_THRESHOLD,
+                        evaluationPeriods: 1,
+                        treatMissingData: TreatMissingData.NOT_BREACHING,
+                    });
+            }
+            if (name == CanaryNames.L1Cart) {
+                const l1CartCanary = new L1CartCanary(this, name, {
+                    ...canaryProperties,
+                    artifactsBucket: canaryArtifactBucket,
+                    targetUrlParameterName: `${PARAMETER_STORE_PREFIX}/${SSM_PARAMETER_NAMES.PETSITE_URL}`,
+                    addToCartSelector: '.add-to-cart',
+                    cartCountSelector: '#cart-count',
+                    updateTimeoutMs: 5000,
+                });
+
+                // Cart-canary failure (Add to cart click did not increase the
+                // cart count) drives an l1t-health- alarm into the triage
+                // path, closing the write-path coverage gap left by the
+                // page-load-only health/UX canaries.
+                l1CartCanary.canary
+                    .metricSuccessPercent({ statistic: 'Average' })
+                    .createAlarm(this, 'L1CartAvailabilityAlarm', {
+                        alarmName: `l1t-health-${l1CartCanary.canary.canaryName}-availability`,
+                        alarmDescription:
+                            'L1 Automated Triage: cart canary failed (Add to cart did not update the cart count)',
                         threshold: 100,
                         comparisonOperator: ComparisonOperator.LESS_THAN_THRESHOLD,
                         evaluationPeriods: 1,

@@ -377,11 +377,26 @@ export const L1_UX_CANARY = {
     path: '../applications/canaries/l1-ux',
 };
 
+/**
+ * L1 Automated Triage cart (user-behavior) canary. Loads the Buy Food page,
+ * clicks "Add to cart", and verifies the cart count actually updates —
+ * exercising the write path (POST /api/cart/.../items) that the page-load
+ * check alone cannot catch. Failures drive an l1t-health- alarm.
+ */
+export const L1_CART_CANARY = {
+    name: 'l1t-cart-canary',
+    runtime: new CanaryRuntime('syn-nodejs-puppeteer-11.0', RuntimeFamily.NODEJS),
+    scheduleExpression: 'rate(5 minutes)',
+    handler: 'index.handler',
+    path: '../applications/canaries/l1-cart',
+};
+
 export const CANARY_FUNCTIONS = new Map([
     [PETSITE_CANARY.name, PETSITE_CANARY],
     [HOUSEKEEPING_CANARY.name, HOUSEKEEPING_CANARY],
     [L1_HEALTH_CANARY.name, L1_HEALTH_CANARY],
     [L1_UX_CANARY.name, L1_UX_CANARY],
+    [L1_CART_CANARY.name, L1_CART_CANARY],
 ]);
 
 /** Maximum number of Availability Zones to use for high availability */
