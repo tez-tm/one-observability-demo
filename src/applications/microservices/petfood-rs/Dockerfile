@@ -1,7 +1,7 @@
 # Build stage
 FROM public.ecr.aws/docker/library/rust:bookworm AS builder
 COPY . .
-RUN cargo build --release
+RUN cargo build --release --locked
 
 # Runtime stage
 FROM public.ecr.aws/docker/library/debian:bookworm-slim
