@@ -321,7 +321,12 @@ export const L1_WEBHOOK_FUNCTION = {
     memorySize: 256,
     handler: 'handler',
     enableSchedule: false,
-    timeout: Duration.seconds(30),
+    // 60s: up to 3 DevOps Agent webhook attempts at a 10s connect timeout
+    // each, plus 1s/2s/4s exponential backoff between attempts, is ~37s
+    // worst case when the endpoint is unreachable. 30s was observed (via a
+    // live invocation-failure drill) to kill the function mid-retry before
+    // it could ever reach the SNS invocation-failure publish.
+    timeout: Duration.seconds(60),
 };
 
 /** Map of Lambda function names to their configurations */
