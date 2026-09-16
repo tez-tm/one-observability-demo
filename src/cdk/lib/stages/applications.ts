@@ -34,6 +34,7 @@ SPDX-License-Identifier: Apache-2.0
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { RemovalPolicy, Stack, StackProps, Stage, Fn } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
+import { Topic } from 'aws-cdk-lib/aws-sns';
 import { Cluster } from 'aws-cdk-lib/aws-ecs';
 import { Utilities } from '../utils/utilities';
 import { WorkshopNetwork } from '../constructs/network';
@@ -744,9 +745,9 @@ export class MicroservicesStack extends Stack {
                 });
             }
             if (name == LambdaFunctionNames.L1tWebhook) {
-                // Secrets for the DevOps Agent webhook and the Slack fallback.
-                // Created with placeholder values; an operator populates the
-                // real DevOps2025 Agent Space webhook URL + HMAC secret post-deploy.
+                // Secret for the DevOps Agent webhook. Created with a placeholder
+                // value; an operator populates the real DevOps2025 Agent Space
+                // webhook URL + HMAC secret post-deploy.
                 const devopsWebhookSecret = new Secret(this, 'L1tDevopsWebhookSecret', {
                     secretName: 'l1t-devops-agent-webhook',
                     description: 'DevOps2025 Agent Space webhook: { webhookUrl, hmacSecret }. Populate post-deploy.',
@@ -755,28 +756,38 @@ export class MicroservicesStack extends Stack {
                         generateStringKey: 'unused',
                     },
                 });
-                const slackWebhookSecret = new Secret(this, 'L1tSlackWebhookSecret', {
-                    secretName: 'l1t-slack-webhook',
-                    description: 'Slack fallback webhook: { webhookUrl }. Populate post-deploy.',
-                    generateSecretString: {
-                        secretStringTemplate: JSON.stringify({ webhookUrl: 'PLACEHOLDER' }),
-                        generateStringKey: 'unused',
-                    },
-                });
 
                 NagSuppressions.addResourceSuppressions(
-                    [devopsWebhookSecret, slackWebhookSecret],
+                    [devopsWebhookSecret],
                     [
-                        { id: 'AwsSolutions-SMG4', reason: 'Webhook secrets are populated/rotated out-of-band by an operator; automatic rotation is not applicable to third-party webhook credentials' },
+                        { id: 'AwsSolutions-SMG4', reason: 'Webhook secret is populated/rotated out-of-band by an operator; automatic rotation is not applicable to third-party webhook credentials' },
                     ],
                     true,
+                );
+
+                // Invocation-failure alert channel: notified only when all 3
+                // DevOps Agent webhook retries are exhausted (the Agent never
+                // ran). This is distinct from routine findings/RCA delivery,
+                // which the DevOps Agent posts natively via its own Slack
+                // integration (configured out-of-band in the AWS DevOps Agent
+                // console; see VALIDATION.md) and is not built here.
+                //
+                // Reuses the pre-existing `vpn-tunnel-replacement-notifications`
+                // SNS topic for this validation cycle's live test (its email
+                // subscription is already confirmed). A dedicated topic is the
+                // correct choice for a production/sample-repo deployment rather
+                // than sharing an unrelated topic long-term.
+                const invocationFailureTopic = Topic.fromTopicArn(
+                    this,
+                    'L1tInvocationFailureTopic',
+                    `arn:aws:sns:${Stack.of(this).region}:${Stack.of(this).account}:vpn-tunnel-replacement-notifications`,
                 );
 
                 new L1WebhookFunction(this, name, {
                     ...lambdafunction,
                     locksTable: imports.dynamodbExports.l1tInvestigationLocksTable,
                     devopsWebhookSecret,
-                    slackWebhookSecret,
+                    invocationFailureTopic,
                     dedupTtlSeconds: 900,
                 });
             }

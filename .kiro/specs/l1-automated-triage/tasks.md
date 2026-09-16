@@ -103,48 +103,22 @@ Each slice ends with a deployability checkpoint (`cdk synth`/build + the slice's
   - Validation after `cdk deploy`: force an `l1t-health-` alarm to ALARM and confirm EventBridge (default bus) routes to the Webhook Lambda, which dedups and attempts the DevOps Agent webhook (verify at log level while the HMAC secret is a placeholder), with Slack fallback on exhaustion
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 5. Slice 3 — Dependency resolution: telemetry-first Dependency Resolver MCP, optional overlay, and weekly reconcile
-  - [ ] 5.1 Implement the Application Signals resolution source (primary)
-    - Call `ListServiceDependencies` (downstream) and `ListServiceDependents` (upstream) on service `application-signals`; construct `KeyAttributes { Type: "Service", Name, Environment }` (max 4 entries); derive the `StartTime`/`EndTime` window (epoch seconds) from the failure timestamp, accounting for hour rounding; page via `NextToken` (MaxResults ≤ 100); normalize results into the `DependencyResolution` shape, carrying each dependency's `MetricReferences`
-    - Handle `ThrottlingException` (retry 3x exponential backoff) and `ValidationException` (no retry)
-    - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.7_
+- [~] 5. Slice 3 — Dependency resolution: telemetry-first Dependency Resolver MCP, optional overlay, and weekly reconcile
+  - **Skipped for this validation target.** Live validation (see `VALIDATION.md`, Incident 3) showed the AWS DevOps Agent's native reasoning + generic AWS read access already performs telemetry-first dependency resolution (ECS/ALB state, X-Ray traces, CloudTrail correlation, ECR history) without this custom MCP server. Recorded as a tested finding, not an untested gap. Kept as an optional extension for weakly-instrumented targets in the app-agnostic sample repo.
+  - [~] 5.1 Implement the Application Signals resolution source (primary) — skipped, see Slice 3 disposition
+  - [~] 5.2 Implement the X-Ray service-graph resolution source (fallback) — skipped, see Slice 3 disposition
+  - [~] 5.3 Create the optional `l1t-service-dependencies` overlay table (last resort) — skipped, see Slice 3 disposition
+  - [~] 5.4 Author seed data for the validation target services (overlay gap-fill) — skipped, see Slice 3 disposition
+  - [~] 5.5 Implement the weekly overlay reconcile Lambda — skipped, see Slice 3 disposition
+  - [~] 5.6 Assemble the Dependency Resolver MCP server (telemetry-first) — skipped, see Slice 3 disposition
+  - [~]* 5.7 Write property test for the overlay staleness detector — skipped, see Slice 3 disposition
+  - [~]* 5.8 Write unit/integration tests for the resolver and reconcile — skipped, see Slice 3 disposition
 
-  - [ ] 5.2 Implement the X-Ray service-graph resolution source (fallback)
-    - Call `GetServiceGraph` on service `xray` for the derived window; locate the target service node and read its downstream `Edges`; invert the graph to derive upstream dependents; normalize into the `DependencyResolution` shape
-    - Handle `ThrottledException` (retry 3x backoff) and `InvalidRequestException` (no retry)
-    - _Requirements: 5.2, 5.4, 5.7_
+- [~] 6. Checkpoint — Slice 3 deployable and testable
+  - **Skipped** — see Slice 3 disposition above and `VALIDATION.md`.
 
-  - [ ] 5.3 Create the optional `l1t-service-dependencies` overlay table (last resort)
-    - Add to the storage layer following the existing DynamoDB construct pattern; PK `serviceName`, attributes `dependencies` (List<Map>) and `lastRefreshedAt` (ISO 8601); the table is optional and its absence must not be an error
-    - _Requirements: 6.1, 6.4_
-
-  - [ ] 5.4 Author seed data for the validation target services (overlay gap-fill)
-    - Define dependency records for the pet adoption services (RDS/Aurora + DynamoDB, per the real dependency map) matching the `ServiceDependencyOverlay`/`OverlayDependency`/`MetricDefinition` data models; used only to fill gaps telemetry does not cover
-    - _Requirements: 6.1_
-
-  - [ ] 5.5 Implement the weekly overlay reconcile Lambda
-    - Scheduled via EventBridge `cron(0 2 ? * SUN *)`; reconciles operator-authored records from the seed source (committed file / SSM / ConfigMap) into the overlay table; updates `lastRefreshedAt`; retries up to 3 times and alerts on failure
-    - _Requirements: 6.2, 6.3_
-
-  - [ ] 5.6 Assemble the Dependency Resolver MCP server (telemetry-first)
-    - Expose `resolve_service_dependencies(serviceName, environment, failureTimestamp)`; apply the resolution order App Signals → X-Ray → overlay; return downstream `dependencies` + upstream `dependents`; return an empty result gracefully; when served from the overlay, read a single item (target < 2s) and include a staleness warning when `lastRefreshedAt` > 14 days old
-    - _Requirements: 5.1, 5.2, 5.5, 5.6, 6.1, 6.4, 6.5_
-
-  - [ ]* 5.7 Write property test for the overlay staleness detector
-    - **Property 9: Staleness warning on old data**
-    - **Validates: Requirements 6.5**
-    - fast-check, min 100 iterations, tag `Feature: l1-automated-triage, Property 9: Staleness warning on old data`; generate random `lastRefreshedAt` timestamps and assert the 14-day boundary
-
-  - [ ]* 5.8 Write unit/integration tests for the resolver and reconcile
-    - Cover the resolution order (App Signals available → downstream + upstream; App Signals empty → X-Ray fallback; both empty → overlay), `KeyAttributes` construction, hour-rounded window derivation, throttle retry/backoff, X-Ray upstream inversion, empty-result handling, and overlay-latency SLA; run the reconcile and verify table contents; **Property 8: Dependency resolution returns within SLA**
-    - _Requirements: 5.1, 5.2, 5.5, 6.1, 6.4_
-
-- [ ] 6. Checkpoint — Slice 3 deployable and testable
-  - Run the CDK build and `cdk synth`; ensure all Slice 3 tests pass
-  - Validation after `cdk deploy`: resolve a known service and confirm downstream dependencies + upstream dependents come back from Application Signals; verify the X-Ray fallback and the optional overlay both work when telemetry is empty
-  - Ensure all tests pass, ask the user if questions arise.
-
-- [ ] 7. Slice 4 — Investigation: 6-step DevOps Agent triage skill
+- [~] 7. Slice 4 — Investigation: 6-step DevOps Agent triage skill
+  - **Skipped for this validation target.** Same finding as Slice 3: the Agent's native investigation (Incident 3 in `VALIDATION.md`) already performs the equivalent of the scripted 6-step runbook — log extraction, service identification, dependency correlation, metrics review, deployment correlation, and RCA — without a fixed skill definition. Two IAM gaps hit during the real investigation (S3 canary-artifact `GetObject`, SSM `/petstore/*` `GetParametersByPath`) are recorded as a follow-up in `VALIDATION.md` rather than motivating a full custom skill build.
   - [ ] 7.1 Implement the URL parser / service-identification module (Step 2)
     - Pure module: map ALB DNS to service name, with path-segment fallback (e.g. `/{service}/health/status`); mark unrecognized URLs and preserve the raw URL
     - _Requirements: 4.1, 4.2, 4.3_
@@ -154,50 +128,21 @@ Each slice ends with a deployability checkpoint (`cdk synth`/build + the slice's
     - **Validates: Requirements 4.1, 4.2, 4.3**
     - fast-check, min 100 iterations, tag `Feature: l1-automated-triage, Property 7: URL parsing extracts service identity`
 
-  - [ ] 7.3 Implement the canary log-extraction step (Step 1)
-    - Query CloudWatch Logs Insights on `/aws/synthetics/{canary-name}` for the most recent failure in the last 60 min; extract URL, status code, error body (first 2048 chars) via the shared parser (Task 1.2); handle no-entries, inaccessible-log-group, and missing-field cases and terminate/annotate as specified
-    - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5_
+  - [~] 7.3 Implement the canary log-extraction step (Step 1) — skipped, see Slice 4 disposition
+  - [~] 7.4 Implement the dependency-resolution step (Step 3) — skipped, see Slice 4 disposition
+  - [~] 7.5 Implement the dependency-metrics query step (Step 4) — skipped, see Slice 4 disposition
+  - [~]* 7.6 Write property test for the metrics time-window builder — skipped, see Slice 4 disposition
+  - [~] 7.7 Implement the deployment-correlation step (Step 5) — skipped, see Slice 4 disposition
+  - [~] 7.8 Implement the confidence calculator and RCA + Runbook KB step (Step 6) — skipped, see Slice 4 disposition
+  - [~]* 7.9 Write property test for the confidence calculator — skipped, see Slice 4 disposition
+  - [~] 7.10 Assemble the "L1 Microservice Triage" skill and wire the steps together — skipped, see Slice 4 disposition
+  - [~]* 7.11 Write unit tests for the triage steps — skipped, see Slice 4 disposition
 
-  - [ ] 7.4 Implement the dependency-resolution step (Step 3)
-    - Call the Dependency Resolver MCP `resolve_service_dependencies(serviceName, environment, failureTimestamp)` within a 5s budget; consume both downstream `dependencies` and upstream `dependents`; on empty result or MCP failure/timeout, annotate the output and continue with deployment correlation only
-    - _Requirements: 5.1, 5.5, 5.6_
-
-  - [ ] 7.5 Implement the dependency-metrics query step (Step 4)
-    - For each dependency, query CloudWatch `GetMetricData` over the exact 15-min window preceding the failure, 60s period, Average statistic; prefer the source-supplied `metricReferences` when present, otherwise fall back to per-type metric sets (RDS: CPUUtilization/DatabaseConnections/FreeableMemory; DynamoDB: ThrottledRequests/SystemErrors/ConsumedReadCapacityUnits; ElastiCache/MSK per design); skip unknown types with no metric references and warn; retry 3x with backoff then annotate the failed dependency
-    - _Requirements: 7.1, 7.2, 7.3, 7.4, 7.5, 7.6, 7.7_
-
-  - [ ]* 7.6 Write property test for the metrics time-window builder
-    - **Property 10: Metric query covers correct time window**
-    - **Validates: Requirements 7.1**
-    - fast-check, min 100 iterations, tag `Feature: l1-automated-triage, Property 10: Metric query covers correct time window`
-
-  - [ ] 7.7 Implement the deployment-correlation step (Step 5)
-    - Query CodePipeline `ListPipelineExecutions` for the affected service's pipeline within the 60 min preceding the failure (up to 10); include execution id/start/status; mark "zero deployments" and, on API failure/timeout, "inconclusive"
-    - _Requirements: 8.1, 8.2, 8.3, 8.4_
-
-  - [ ] 7.8 Implement the confidence calculator and RCA + Runbook KB step (Step 6)
-    - Correlate metric anomalies within the 15-min window to determine root cause; match against the Runbook KB (RDS CPU>90%, ElastiCache Evictions>1000/min, MSK UnderReplicatedPartitions>0); assign confidence High (3+ metrics) / Medium (2) / Low (≤1 or no match)
-    - _Requirements: 9.1, 9.2, 9.3, 9.4, 9.5, 9.6, 9.7_
-
-  - [ ]* 7.9 Write property test for the confidence calculator
-    - **Property 11: Confidence level assignment is deterministic**
-    - **Validates: Requirements 9.7**
-    - fast-check, min 100 iterations, tag `Feature: l1-automated-triage, Property 11: Confidence level assignment is deterministic`; cover 0/1/2/3+ correlated-metric boundaries
-
-  - [ ] 7.10 Assemble the "L1 Microservice Triage" skill and wire the steps together
-    - Define the skill (steps 1–6 with their tools), produce a `TriageResult`, and replace the Slice 2 log-only agent stub so the Webhook Lambda invokes the real skill
-    - _Requirements: 3.1, 4.1, 5.1, 7.1, 8.1, 9.1_
-
-  - [ ]* 7.11 Write unit tests for the triage steps
-    - Cover metrics retry/skip, deployment "inconclusive", and runbook no-match → Low confidence
-    - _Requirements: 7.6, 8.4, 9.3_
-
-- [ ] 8. Checkpoint — Slice 4 deployable and testable
-  - Run the CDK build and `cdk synth`; ensure all Slice 4 tests pass
-  - Validation after `cdk deploy`: run the full 6-step skill against a real failure and confirm metrics and deployment correlation produce a root cause
-  - Ensure all tests pass, ask the user if questions arise.
+- [~] 8. Checkpoint — Slice 4 deployable and testable
+  - **Skipped** — see Slice 4 disposition above and `VALIDATION.md`.
 
 - [ ] 9. Slice 5 — Delivery: Slack integration
+  - **Status note:** the Slack fallback path (`postSlackFallback`) exists in the Slice 2 webhook Lambda code but has never been exercised — both real DevOps Agent invocations validated so far got a 200 on the first attempt, so retry exhaustion (the only trigger for Slack fallback) never occurred. See `VALIDATION.md`. Not marked skipped; remains a real open item if Slack delivery on agent-unavailability is required.
   - [ ] 9.1 Implement the Slack Block Kit message builder
     - Pure module: build a message with separately labeled sections for failed URL, service name, dependency issue, root cause, recommended fix, and confidence; render an "unavailable" indicator for missing values rather than omitting the field
     - _Requirements: 10.1, 10.2_

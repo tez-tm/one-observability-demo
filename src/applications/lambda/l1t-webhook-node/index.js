@@ -16,7 +16,12 @@ SPDX-License-Identifier: Apache-2.0
  *   3. Invokes the AWS DevOps Agent by POSTing an HMAC-signed webhook to the
  *      DevOps2025 Agent Space generic webhook. Retries 3x with exponential
  *      backoff (1s/2s/4s) on non-2xx / no response.
- *   4. On retry exhaustion, posts a fallback notification to Slack.
+ *   4. On retry exhaustion (the Agent could not be invoked at all), publishes
+ *      an invocation-failure alert to an SNS topic. This is distinct from
+ *      routine findings/RCA delivery: those are posted by the DevOps Agent's
+ *      own native Slack integration (configured out-of-band in the AWS
+ *      DevOps Agent console, not by this Lambda) whenever an investigation
+ *      actually runs. SNS only fires when the Agent never ran at all.
  *
  * DevOps Agent webhook contract (HMAC / Version 1):
  *   POST <webhookUrl>
@@ -27,10 +32,10 @@ SPDX-License-Identifier: Apache-2.0
  *   body: { eventType, incidentId, action, priority, title, description, timestamp[, service, data] }
  *
  * Configuration (environment variables set by the CDK construct):
- *   L1T_LOCKS_TABLE_NAME          DynamoDB dedup table
- *   L1T_DEVOPS_WEBHOOK_SECRET_ARN Secrets Manager ARN -> { webhookUrl, hmacSecret }
- *   L1T_SLACK_SECRET_ARN          Secrets Manager ARN -> { webhookUrl } (Slack)
- *   L1T_DEDUP_TTL_SECONDS         dedup window (default 900)
+ *   L1T_LOCKS_TABLE_NAME              DynamoDB dedup table
+ *   L1T_DEVOPS_WEBHOOK_SECRET_ARN     Secrets Manager ARN -> { webhookUrl, hmacSecret }
+ *   L1T_INVOCATION_FAILURE_TOPIC_ARN  SNS topic ARN, notified only on retry exhaustion
+ *   L1T_DEDUP_TTL_SECONDS             dedup window (default 900)
  */
 
 'use strict';
@@ -46,6 +51,8 @@ let _ddb;
 let _PutCommand;
 let _secrets;
 let _GetSecretValueCommand;
+let _sns;
+let _PublishCommand;
 
 function ddbClient() {
     if (!_ddb) {
@@ -64,6 +71,15 @@ function secretsClient() {
         _secrets = new SecretsManagerClient({});
     }
     return _secrets;
+}
+
+function snsClient() {
+    if (!_sns) {
+        const { SNSClient, PublishCommand } = require('@aws-sdk/client-sns');
+        _PublishCommand = PublishCommand;
+        _sns = new SNSClient({});
+    }
+    return _sns;
 }
 
 const DEDUP_TTL_SECONDS = Number(process.env.L1T_DEDUP_TTL_SECONDS) || 900;
@@ -287,33 +303,35 @@ async function invokeWithRetry(webhookConfig, payload) {
 }
 
 /**
- * Post a fallback failure notification to Slack.
+ * Publish an invocation-failure alert to SNS. Fired only when all DevOps
+ * Agent webhook retries are exhausted (the Agent never ran) — a distinct
+ * failure mode from a completed investigation's findings, which the DevOps
+ * Agent delivers itself via its native Slack integration when it does run.
  *
- * @param {string} slackSecretArn
+ * @param {string} topicArn
  * @param {string} canaryName
+ * @param {string|null} lastError
  */
-async function postSlackFallback(slackSecretArn, canaryName) {
-    if (!slackSecretArn) {
-        log('warn', 'No Slack secret configured; skipping fallback notification', { canaryName });
+async function publishInvocationFailure(topicArn, canaryName, lastError) {
+    if (!topicArn) {
+        log('warn', 'No invocation-failure SNS topic configured; logging undelivered alert', { canaryName });
         return;
     }
     try {
-        const cfg = await readSecretJson(slackSecretArn);
-        if (!cfg.webhookUrl || cfg.webhookUrl.includes('PLACEHOLDER')) {
-            log('warn', 'Slack webhook URL is placeholder; logging undelivered fallback', { canaryName });
-            return;
-        }
-        const msg = {
-            text: `:warning: L1 triage could not initiate a DevOps Agent investigation for canary *${canaryName}* after ${MAX_ATTEMPTS} attempts.`,
-        };
-        await postWebhook(cfg.webhookUrl, '', msg).catch((e) => {
-            // Slack doesn't use our HMAC; postWebhook signs but Slack ignores extra headers.
-            log('error', 'Slack fallback delivery failed', { canaryName, error: e.message });
-            throw e;
-        });
-        log('info', 'Slack fallback notification sent', { canaryName });
+        const client = snsClient();
+        await client.send(
+            new _PublishCommand({
+                TopicArn: topicArn,
+                Subject: `L1 triage: DevOps Agent unreachable for ${canaryName}`,
+                Message:
+                    `L1 automated triage could not invoke the AWS DevOps Agent for canary "${canaryName}" ` +
+                    `after ${MAX_ATTEMPTS} attempts. The Agent did not run and no investigation was started. ` +
+                    `Last error: ${lastError || 'unknown'}.`,
+            }),
+        );
+        log('info', 'Invocation-failure alert published to SNS', { canaryName });
     } catch (e) {
-        log('error', 'Slack fallback error', { canaryName, error: e.message });
+        log('error', 'Failed to publish invocation-failure alert', { canaryName, error: e.message });
     }
 }
 
@@ -362,11 +380,11 @@ exports.handler = async (event) => {
     const result = await invokeWithRetry(webhookConfig, payload);
 
     if (!result.ok) {
-        log('error', 'DevOps Agent invocation failed after retries; sending Slack fallback', {
+        log('error', 'DevOps Agent invocation failed after retries; publishing invocation-failure alert', {
             canaryName: parsed.canaryName,
             lastError: result.lastError,
         });
-        await postSlackFallback(process.env.L1T_SLACK_SECRET_ARN, parsed.canaryName);
+        await publishInvocationFailure(process.env.L1T_INVOCATION_FAILURE_TOPIC_ARN, parsed.canaryName, result.lastError);
         return { invoked: false, reason: 'retries-exhausted', lastError: result.lastError };
     }
 
@@ -381,4 +399,5 @@ exports.__test__ = {
     invokeWithRetry,
     acquireLock,
     postWebhook,
+    publishInvocationFailure,
 };

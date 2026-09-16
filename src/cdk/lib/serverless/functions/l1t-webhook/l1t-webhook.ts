@@ -4,7 +4,10 @@
  * Receives `l1t-health-` CloudWatch alarm state-change events (routed by an
  * EventBridge rule on the default bus), deduplicates via a DynamoDB locks
  * table, and invokes the AWS DevOps Agent (DevOps2025 Agent Space) by POSTing
- * an HMAC-signed webhook. Falls back to Slack on retry exhaustion.
+ * an HMAC-signed webhook. Publishes an SNS notification on retry exhaustion
+ * (invocation failure only — routine findings/RCA are delivered separately by
+ * the DevOps Agent's own native Slack integration, configured out-of-band in
+ * the AWS DevOps Agent console; see VALIDATION.md).
  *
  * Extends {@link WokshopLambdaFunction} to inherit DLQ, structured logging,
  * X-Ray tracing, and Application Signals instrumentation.
@@ -19,6 +22,7 @@ import { Effect, Policy, PolicyStatement } from 'aws-cdk-lib/aws-iam';
 import { ILayerVersion, LayerVersion } from 'aws-cdk-lib/aws-lambda';
 import { ITable } from 'aws-cdk-lib/aws-dynamodb';
 import { ISecret } from 'aws-cdk-lib/aws-secretsmanager';
+import { ITopic } from 'aws-cdk-lib/aws-sns';
 import { Queue } from 'aws-cdk-lib/aws-sqs';
 import { BundlingOptions } from 'aws-cdk-lib/aws-lambda-nodejs';
 import { NagSuppressions } from 'cdk-nag';
@@ -36,8 +40,8 @@ export interface L1WebhookFunctionProperties extends WorkshopLambdaFunctionPrope
     locksTable: ITable;
     /** Secret holding { webhookUrl, hmacSecret } for the DevOps2025 Agent Space webhook. */
     devopsWebhookSecret: ISecret;
-    /** Secret holding { webhookUrl } for the Slack fallback channel. */
-    slackWebhookSecret: ISecret;
+    /** SNS topic notified when all DevOps Agent invocation retries are exhausted (invocation-failure alert, not a findings channel). */
+    invocationFailureTopic: ITopic;
     /** Dedup window in seconds (default 900). */
     dedupTtlSeconds?: number;
 }
@@ -90,11 +94,17 @@ export class L1WebhookFunction extends WokshopLambdaFunction {
                     actions: ['dynamodb:PutItem', 'dynamodb:GetItem'],
                     resources: [props.locksTable.tableArn],
                 }),
-                // Read the DevOps Agent + Slack webhook secrets (scoped to ARNs).
+                // Read the DevOps Agent webhook secret (scoped to ARN).
                 new PolicyStatement({
                     effect: Effect.ALLOW,
                     actions: ['secretsmanager:GetSecretValue'],
-                    resources: [props.devopsWebhookSecret.secretArn, props.slackWebhookSecret.secretArn],
+                    resources: [props.devopsWebhookSecret.secretArn],
+                }),
+                // Publish invocation-failure alerts (scoped to the topic ARN).
+                new PolicyStatement({
+                    effect: Effect.ALLOW,
+                    actions: ['sns:Publish'],
+                    resources: [props.invocationFailureTopic.topicArn],
                 }),
                 new PolicyStatement({
                     effect: Effect.ALLOW,
@@ -123,7 +133,7 @@ export class L1WebhookFunction extends WokshopLambdaFunction {
         return {
             L1T_LOCKS_TABLE_NAME: props.locksTable.tableName,
             L1T_DEVOPS_WEBHOOK_SECRET_ARN: props.devopsWebhookSecret.secretArn,
-            L1T_SLACK_SECRET_ARN: props.slackWebhookSecret.secretArn,
+            L1T_INVOCATION_FAILURE_TOPIC_ARN: props.invocationFailureTopic.topicArn,
             L1T_DEDUP_TTL_SECONDS: String(props.dedupTtlSeconds ?? 900),
             AWS_NODEJS_CONNECTION_REUSE_ENABLED: '1',
             OTEL_AWS_APPLICATION_SIGNALS_ENABLED: 'true',
@@ -145,7 +155,12 @@ export class L1WebhookFunction extends WokshopLambdaFunction {
     getBundling(_properties: WorkshopLambdaFunctionProperties): BundlingOptions {
         return {
             externalModules: [],
-            nodeModules: ['@aws-sdk/client-dynamodb', '@aws-sdk/lib-dynamodb', '@aws-sdk/client-secrets-manager'],
+            nodeModules: [
+                '@aws-sdk/client-dynamodb',
+                '@aws-sdk/lib-dynamodb',
+                '@aws-sdk/client-secrets-manager',
+                '@aws-sdk/client-sns',
+            ],
         };
     }
 }
