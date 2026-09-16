@@ -12,10 +12,13 @@ chain against real incidents in the `one-observability-demo` validation target (
 | 1 | `l1t-ux-canary` | Real outage: `petlistadoptions-py` scaled to 0 | Detection gap found and fixed (see below) | N/A — detection-layer bug, not a triage run |
 | 2 | `l1t-ux-canary` | Live re-validation (no outage) | 2 false positives found and fixed | N/A — false-positive fixes, not a triage run |
 | 3 | `l1t-cart-canary` | Injected: `petfood-rs` `list_foods` forced 500 | Full chain fired end-to-end, DevOps Agent investigated autonomously | Yes — root cause and timeline matched independently-verified evidence |
+| 4 | `l1t-cart-canary` | Drill: DevOps Agent webhook secret pointed at an unreachable endpoint | Retries exhausted correctly, SNS invocation-failure alert delivered by email | N/A — invocation-failure path, no investigation runs when the Agent can't be reached |
 
 Incident 3 is the only run that exercised the complete chain including a real DevOps Agent
 investigation and RCA. Incidents 1–2 hardened the detection layer (Slice 1/2) that incident 3
-then relied on.
+then relied on. Incident 4 validates the complementary failure-mode path: what happens when the
+Agent cannot be invoked at all (see "Slice 5 redesign" below for why this replaced the original
+Slack-fallback design).
 
 ---
 
@@ -117,6 +120,80 @@ correct, independently-verified root cause.**
 
 ---
 
+## Incident 4 — SNS invocation-failure drill (Slice 5 redesign)
+
+**Context — why Slack was replaced with SNS before this drill ran:** the original Slice 5
+design (see `design.md`) had the webhook Lambda build and POST its own Slack Block Kit message
+for both retry-exhaustion alerts and (eventually) full findings delivery. Two things changed
+this:
+1. AWS DevOps Agent has a **native** Slack integration (console-configured: register the
+   workspace, associate a channel, optionally enable bidirectional mode) that posts an
+   investigation's findings/RCA/mitigation plan itself, with richer detail than anything
+   hand-built here, for zero application code. This makes a custom Slack findings-delivery
+   Lambda redundant.
+2. That native integration only posts when the Agent successfully investigates. It has nothing
+   to say when the Agent was never reachable at all (all 3 webhook retries exhausted) — a
+   distinct failure mode the custom fallback path still needs to cover, just not via Slack.
+
+Decision: keep a narrow "invocation failed" alert, but deliver it via **SNS** instead of a
+custom Slack webhook — simpler (no message formatting/HMAC/retry code to maintain), and SNS's
+fan-out (email now, could add SMS/Lambda/SQS/a future Slack subscriber later) isn't hardcoded
+into the webhook Lambda. Implemented in `d967b7ef` (removed `postSlackFallback` and the
+`l1t-slack-webhook` secret; added `sns:Publish` + `L1T_INVOCATION_FAILURE_TOPIC_ARN`).
+
+For this validation cycle, reused the pre-existing `vpn-tunnel-replacement-notifications` SNS
+topic (already had a confirmed email subscription). Not the intended long-term design — see
+"Known deviation" below.
+
+**What happened during the test (two real bugs found, not just the intended result):**
+- First live attempt: the webhook Lambda's own retry loop (3 attempts × 10s connect timeout,
+  plus 1s/2s/4s backoff ≈ 37s worst case) exceeded the Lambda's 30s default timeout. The
+  function was killed mid-retry (hard Lambda timeout after only 2 of 3 attempts) before it ever
+  reached the SNS publish — the alert never fired. Not a design flaw in the SNS approach, an
+  actual missing timeout budget.
+- Attempted fix #1 (`0f4ff69a`): added `properties.timeout ?? Duration.seconds(60)` inside
+  `L1WebhookFunction`'s constructor. Redeployed, re-ran the drill — **still failed**, same
+  symptom. Investigation showed `L1_WEBHOOK_FUNCTION` in `bin/environment.ts` already sets
+  `timeout: Duration.seconds(30)` explicitly, so `properties.timeout` was never `undefined`
+  and the `??` fallback never activated. Confirmed via the live CloudFormation template
+  (`Timeout: 30` was still present in the deployed stack) and the Lambda's live config, not
+  just by re-reading the source.
+- Attempted fix #2 (`8646bac6`, correct): moved the change to its actual source of truth —
+  `L1_WEBHOOK_FUNCTION.timeout` itself, now `Duration.seconds(60)`. Removed the non-functional
+  override in the construct. Redeployed, re-ran the drill — succeeded.
+
+**Chain evidence (final successful run, UTC 2026-09-16):**
+
+| Hop | Evidence | Timestamp |
+|---|---|---|
+| Alarm reset to OK | Manual, to drive a fresh transition against the now-unreachable test secret | 17:32:42 |
+| Alarm fires | `l1t-health-l1t-cart-canary-availability` → `ALARM` (real, still-failing canary) | 17:33:58.088 |
+| Webhook Lambda invoked | Alarm parsed, `agentInvocationId` generated | 17:33:58.873 |
+| Attempt 1 fails | `"DevOps Agent webhook attempt failed","attempt":1,"error":"Webhook request timed out"` | 17:34:10.849 |
+| Attempt 2 fails | same, `attempt:2` | 17:34:21.859 |
+| Attempt 3 fails | same, `attempt:3` — retries now genuinely exhausted | 17:34:33.865 |
+| SNS publish | `"Invocation-failure alert published to SNS"` | 17:34:34.062 |
+| Total duration | `35225.67 ms` — under the fixed 60s timeout | — |
+| Email received | Operator-confirmed: exact message text matches the code's built string, `Last error: Webhook request timed out` | (post-test) |
+
+**Disposition: SNS invocation-failure path fully validated end-to-end, including a real bug
+found and fixed twice (wrong-location fix identified as ineffective via live redeploy + config
+check, not assumed correct from source alone).**
+
+**Known deviation — action before treating this as production-ready:** the topic used for this
+drill (`vpn-tunnel-replacement-notifications`) is a shared, differently-owned resource (VPN
+tunnel replacement alerts), reused here only because its email subscription was already
+confirmed and convenient for a live test. Recommend provisioning a dedicated
+`l1t-invocation-failure` SNS topic for any real deployment — sharing an unrelated topic
+long-term risks unrelated-alert noise for its actual owner and silent breakage if they
+rename/delete/rescope it without knowing L1 triage depends on it.
+
+**Restoration:** the DevOps Agent webhook secret was restored to its real value
+(`event-ai.us-east-1.api.aws`) immediately after this drill; temp files containing secret
+material were deleted.
+
+---
+
 ## Slices 3–4 (Dependency Resolver MCP + scripted 6-step triage skill) — not built
 
 **Original design intent (see `design.md`):** a purpose-built Dependency Resolver MCP server
@@ -190,10 +267,18 @@ remains an open hypothesis rather than a checked fact — not because it's belie
 non-issue, but because closing it wasn't judged worth the IAM change for this validation cycle.
 If `petfood-rs` env resolution is ever investigated by other means, revisit this finding.
 
-## Slice 5 (Slack delivery) — not exercised
+## Slice 5 (Delivery) — redesigned and validated
 
-The webhook Lambda's Slack fallback path (`postSlackFallback`) exists in code but has not been
-exercised by any real run: both real DevOps Agent invocations in this validation cycle (the two
-UX-canary alarm events and the cart-canary event in Incident 3) received an HTTP 200 from the
-Agent webhook on the first attempt, so retry exhaustion — the only path that triggers the Slack
-fallback — never occurred. Slice 5 remains untested, not confirmed-working.
+Superseded by two separate, validated mechanisms instead of the originally-designed custom
+Slack delivery Lambda:
+
+1. **Routine findings/RCA delivery** — the AWS DevOps Agent's native Slack integration
+   (console-configured, zero application code). Confirmed working operationally by the account's
+   pre-existing Slack integration for other use cases; not re-tested here since it required no
+   code from this project.
+2. **Invocation-failure alert** — SNS, see Incident 4 above. Fully validated end-to-end
+   including a real bug (Lambda timeout) found and fixed during the drill.
+
+Neither path uses a custom Slack webhook or Block Kit message builder; the original Slice 5
+design (`postSlackFallback`, `l1t-slack-webhook` secret) has been removed from the codebase
+(`d967b7ef`).

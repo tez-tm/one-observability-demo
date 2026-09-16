@@ -141,38 +141,17 @@ Each slice ends with a deployability checkpoint (`cdk synth`/build + the slice's
 - [~] 8. Checkpoint — Slice 4 deployable and testable
   - **Skipped** — see Slice 4 disposition above and `VALIDATION.md`.
 
-- [ ] 9. Slice 5 — Delivery: Slack integration
-  - **Status note:** the Slack fallback path (`postSlackFallback`) exists in the Slice 2 webhook Lambda code but has never been exercised — both real DevOps Agent invocations validated so far got a 200 on the first attempt, so retry exhaustion (the only trigger for Slack fallback) never occurred. See `VALIDATION.md`. Not marked skipped; remains a real open item if Slack delivery on agent-unavailability is required.
-  - [ ] 9.1 Implement the Slack Block Kit message builder
-    - Pure module: build a message with separately labeled sections for failed URL, service name, dependency issue, root cause, recommended fix, and confidence; render an "unavailable" indicator for missing values rather than omitting the field
-    - _Requirements: 10.1, 10.2_
+- [x] 9. Slice 5 — Delivery: redesigned (native Slack + SNS), not the original custom Slack integration
+  - **Redesigned and validated.** Replaced the originally-planned custom Slack Block Kit delivery Lambda with two mechanisms: (1) the AWS DevOps Agent's own native Slack integration (console-configured, zero code) for routine findings/RCA delivery, and (2) an SNS invocation-failure alert (`d967b7ef`) for the case where the Agent could not be invoked at all. Live-drilled end-to-end in Incident 4 (`VALIDATION.md`), including finding and fixing a real Lambda timeout bug along the way. The subtasks below (9.1–9.6, the custom Slack message builder/property tests) are superseded and not implemented — see `VALIDATION.md` "Slice 5 (Delivery) — redesigned and validated".
+  - [~] 9.1 Implement the Slack Block Kit message builder — superseded, see Slice 5 disposition
+  - [~]* 9.2 Write property test for the Slack message builder — superseded, see Slice 5 disposition
+  - [~] 9.3 Implement partial-findings handling — superseded, see Slice 5 disposition
+  - [~]* 9.4 Write property test for partial findings — superseded, see Slice 5 disposition
+  - [x] 9.5 Implement failure-alert delivery with retry — implemented as SNS publish (not Slack), see Slice 5 disposition
+  - [x]* 9.6 Write integration test for end-to-end delivery — live-drilled in Incident 4 instead (real SNS publish + confirmed email receipt), see `VALIDATION.md`
 
-  - [ ]* 9.2 Write property test for the Slack message builder
-    - **Property 12: Slack message contains all required fields**
-    - **Validates: Requirements 10.1, 10.2**
-    - fast-check, min 100 iterations, tag `Feature: l1-automated-triage, Property 12: Slack message contains all required fields`; generate `TriageResult` objects with null/present fields
-
-  - [ ] 9.3 Implement partial-findings handling
-    - When triage fails at step N (>1), build a message including all values gathered in steps 1..N-1 and naming the failed step
-    - _Requirements: 10.3_
-
-  - [ ]* 9.4 Write property test for partial findings
-    - **Property 13: Partial findings on triage failure**
-    - **Validates: Requirements 10.3**
-    - fast-check, min 100 iterations, tag `Feature: l1-automated-triage, Property 13: Partial findings on triage failure`
-
-  - [ ] 9.5 Implement Slack delivery with retry and undelivered-payload logging
-    - Post to `#l1-triage-alerts` on triage completion; retry 3x with backoff; on failure, log the undelivered payload and Slack error response to CloudWatch for later retrieval; wire delivery into the skill completion path
-    - _Requirements: 10.1, 10.4_
-
-  - [ ]* 9.6 Write integration test for end-to-end delivery
-    - Invoke with a mock `TriageResult` and verify the message arrives in a test channel; verify undelivered-payload logging on simulated failure
-    - _Requirements: 10.1, 10.2, 10.3, 10.4_
-
-- [ ] 10. Checkpoint — Slice 5 deployable and end-to-end
-  - Run the CDK build and `cdk synth`; ensure all Slice 5 tests pass; confirm idempotent redeploy (`cdk synth` stable, no duplicate resources)
-  - Validation after `cdk deploy`: run an end-to-end triage and confirm the findings message arrives in `#l1-triage-alerts`
-  - Ensure all tests pass, ask the user if questions arise.
+- [x] 10. Checkpoint — Slice 5 deployable and end-to-end
+  - **Validated via live drill (Incident 4, `VALIDATION.md`)** rather than a mock-based integration test: forced a real invocation-failure condition, confirmed SNS publish in Lambda logs, and confirmed actual email receipt by the operator.
 
 ## Notes
 
