@@ -141,9 +141,10 @@ fan-out (email now, could add SMS/Lambda/SQS/a future Slack subscriber later) is
 into the webhook Lambda. Implemented in `d967b7ef` (removed `postSlackFallback` and the
 `l1t-slack-webhook` secret; added `sns:Publish` + `L1T_INVOCATION_FAILURE_TOPIC_ARN`).
 
-For this validation cycle, reused the pre-existing `vpn-tunnel-replacement-notifications` SNS
-topic (already had a confirmed email subscription). Not the intended long-term design — see
-"Known deviation" below.
+For the live drill itself, reused the pre-existing `vpn-tunnel-replacement-notifications` SNS
+topic (already had a confirmed email subscription) to get a real end-to-end result quickly. The
+codebase now provisions a dedicated topic (`l1t-invocation-failure`) instead — see "Known
+deviation, now resolved" below.
 
 **What happened during the test (two real bugs found, not just the intended result):**
 - First live attempt: the webhook Lambda's own retry loop (3 attempts × 10s connect timeout,
@@ -180,13 +181,15 @@ topic (already had a confirmed email subscription). Not the intended long-term d
 found and fixed twice (wrong-location fix identified as ineffective via live redeploy + config
 check, not assumed correct from source alone).**
 
-**Known deviation — action before treating this as production-ready:** the topic used for this
-drill (`vpn-tunnel-replacement-notifications`) is a shared, differently-owned resource (VPN
-tunnel replacement alerts), reused here only because its email subscription was already
-confirmed and convenient for a live test. Recommend provisioning a dedicated
-`l1t-invocation-failure` SNS topic for any real deployment — sharing an unrelated topic
-long-term risks unrelated-alert noise for its actual owner and silent breakage if they
-rename/delete/rescope it without knowing L1 triage depends on it.
+**Known deviation, now resolved:** the topic used for the live drill
+(`vpn-tunnel-replacement-notifications`) was a shared, differently-owned resource (VPN tunnel
+replacement alerts), reused only because its email subscription was already confirmed and
+convenient for a fast live test. Sharing an unrelated topic long-term would have risked
+unrelated-alert noise for its actual owner and silent breakage if they rename/delete/rescope it
+without knowing L1 triage depends on it. The codebase now provisions its own dedicated
+`l1t-invocation-failure` SNS topic (created alongside the webhook Lambda in `applications.ts`);
+an operator subscribes an email or other SNS-supported endpoint post-deploy, same as the
+DevOps Agent webhook secret's post-deploy population step.
 
 **Restoration:** the DevOps Agent webhook secret was restored to its real value
 (`event-ai.us-east-1.api.aws`) immediately after this drill; temp files containing secret
@@ -244,9 +247,19 @@ strictly improves the Agent's existing native investigation quality):
    vs. using literal env values directly. This left the Agent's placeholder-env observation
    (see below) as a hypothesis rather than a confirmed fact.
 
-**Decision: skip.** Neither gap affected the correctness of the tested incident's RCA — the
-Agent fully compensated for the S3 gap via CloudWatch Logs + X-Ray, and the resulting root
-cause was independently verified as correct. Not actioning this IAM policy addition.
+**Decision: skip, and not just for this cycle.** Neither gap affected the correctness of the
+tested incident's RCA — the Agent fully compensated for the S3 gap via CloudWatch Logs + X-Ray,
+and the resulting root cause was independently verified as correct.
+
+Beyond that specific result, these two grants (this canary bucket's ARN, this app's
+`/petstore/*` SSM path) are petstore-specific and wouldn't generalize to another application
+anyway — a different target app has a different bucket, a different (or no) SSM parameter
+namespace. Since this system is designed to be application-agnostic, the right long-term
+pattern isn't "pre-grant these two permissions" but "grant the Agent's role read access to
+whatever observability resources the target app actually uses, reactively, when a real
+investigation reveals a gap that measurably affects investigation quality." Not every
+AccessDenied the Agent hits is worth fixing — only ones that change or degrade an RCA. This one
+didn't.
 
 Note the two gaps are not equivalent in what skipping them costs: the S3 gap had no
 downstream effect at all. The SSM gap means the placeholder-env side-finding below stays an

@@ -772,16 +772,14 @@ export class MicroservicesStack extends Stack {
                 // integration (configured out-of-band in the AWS DevOps Agent
                 // console; see VALIDATION.md) and is not built here.
                 //
-                // Reuses the pre-existing `vpn-tunnel-replacement-notifications`
-                // SNS topic for this validation cycle's live test (its email
-                // subscription is already confirmed). A dedicated topic is the
-                // correct choice for a production/sample-repo deployment rather
-                // than sharing an unrelated topic long-term.
-                const invocationFailureTopic = Topic.fromTopicArn(
-                    this,
-                    'L1tInvocationFailureTopic',
-                    `arn:aws:sns:${Stack.of(this).region}:${Stack.of(this).account}:vpn-tunnel-replacement-notifications`,
-                );
+                // Dedicated topic (validated end-to-end via a live drill; see
+                // VALIDATION.md Incident 4). An operator subscribes an email
+                // (or other SNS-supported endpoint) post-deploy.
+                const invocationFailureTopic = new Topic(this, 'L1tInvocationFailureTopic', {
+                    topicName: 'l1t-invocation-failure',
+                    displayName: 'L1 Automated Triage: DevOps Agent invocation failure',
+                    enforceSSL: true,
+                });
 
                 new L1WebhookFunction(this, name, {
                     ...lambdafunction,
