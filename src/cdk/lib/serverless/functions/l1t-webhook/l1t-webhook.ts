@@ -14,7 +14,7 @@
  *
  * @packageDocumentation
  */
-import { Stack } from 'aws-cdk-lib';
+import { Duration, Stack } from 'aws-cdk-lib';
 import { Rule } from 'aws-cdk-lib/aws-events';
 import { LambdaFunction } from 'aws-cdk-lib/aws-events-targets';
 import { EventBus } from 'aws-cdk-lib/aws-events';
@@ -51,7 +51,14 @@ export interface L1WebhookFunctionProperties extends WorkshopLambdaFunctionPrope
  */
 export class L1WebhookFunction extends WokshopLambdaFunction {
     constructor(scope: Construct, id: string, properties: L1WebhookFunctionProperties) {
-        super(scope, id, properties);
+        // The base default (30s) is too short for this Lambda's own retry
+        // loop: up to 3 webhook attempts at a 10s connect timeout each, plus
+        // 1s/2s/4s exponential backoff between attempts, is ~37s worst case
+        // when the DevOps Agent endpoint is genuinely unreachable. Without
+        // headroom the function is killed mid-retry (observed as a hard
+        // Lambda timeout) before it ever reaches the SNS invocation-failure
+        // publish. Give it enough time to actually exhaust its retries.
+        super(scope, id, { ...properties, timeout: properties.timeout ?? Duration.seconds(60) });
 
         // EventBridge rule on the DEFAULT bus — CloudWatch delivers alarm
         // state-change events to the account default bus, not custom buses.
